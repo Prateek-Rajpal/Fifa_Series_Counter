@@ -8,4 +8,4 @@ compatibility_date = "2026-01-01"
 [[d1_databases]]
 binding = "DB"              # must stay "DB" — the Worker code looks for env.DB
 database_name = "fc26"
-database_id = "paste-your-database-id-here"
+database_id = "0d2bb17a-c999-4178-a2e4-e19e37459628"
