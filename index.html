@@ -4,6 +4,22 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0B1523" />
+<!--
+  Content Security Policy. connect-src is what limits where this page can send
+  your data. It currently allows any *.workers.dev host; tighten it to your own
+  Worker for the strongest setting, e.g.
+    connect-src https://fifa-series-counter.rajpal-prateek98.workers.dev;
+-->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'unsafe-inline';
+  style-src 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  img-src data: blob:;
+  connect-src https://*.workers.dev;
+  form-action 'none';
+  base-uri 'none';
+" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="mobile-web-app-capable" content="yes" />
@@ -84,6 +100,9 @@
 
   .name-in { flex: 1; border-radius: 12px; padding: 10px 12px; background: var(--panel2);
              border: 1px solid var(--line); color: var(--chalk); font-size: 15px; }
+  .date-in { border-radius: 10px; padding: 7px 10px; background: var(--panel2);
+             border: 1px solid var(--line); color: var(--chalk); font-size: 13px;
+             font-family: inherit; }
   .sc-in { width: 100%; border-radius: 10px; padding: 8px 10px; background: var(--panel2);
            border: 1px solid var(--line); color: var(--chalk); font-size: 13px; }
   .scorers { display: block; font-size: 11px; font-weight: 500; color: var(--muted);
@@ -116,7 +135,7 @@
 <body>
 <div class="wrap">
   <h1>FC 26 series log</h1>
-  <p class="sub">Five matches a series. Whoever ends on most points takes it.</p>
+  <p class="sub">Five matches a series. Most wins takes it. Level is a draw.</p>
   <div id="warn"></div>
   <div id="syncbar"></div>
   <nav id="nav"></nav>
@@ -133,6 +152,8 @@
     seriesLength: 5,
     carry: { a: 0, b: 0, c: 0 },
     carryH2H: {},
+    versions: ["FC 26", "FC 27"],
+    lastVersion: "FC 26",
     sync: { url: "", room: "" },
     pushedAt: 0,
     teams: ["Liverpool", "Barcelona", "Real Madrid", "Bayern Munich",
@@ -147,8 +168,8 @@
 
   var storageOK = true;
   var data = load();
-  var ui = { pair: 0, tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [],
-             newTeam: "", openSeries: null, confirming: false, copied: false };
+  var ui = { pair: 0, ver: "", tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [], v: "",
+             newTeam: "", newVer: "", openSeries: null, confirming: false, copied: false };
 
   /* ------------------------------ persistence ----------------------------- */
 
@@ -182,6 +203,17 @@
     return (s.matches || []).filter(function (m) { return !m.deleted; })
       .sort(function (a, b) { return (a.ord || 0) - (b.ord || 0); });
   }
+  // Version filter. Only the Table and History tabs honour it; logging is
+  // always against the live series whatever the filter says.
+  function verOK(m) { return !ui.ver || (m.v || "") === ui.ver; }
+  function mxv(s) { return mx(s).filter(verOK); }
+  function sxv() {
+    return sx().filter(function (s) { return !ui.ver || mx(s).some(verOK); });
+  }
+
+  // A series keeps its real number whatever the version filter is showing.
+  function seriesNo(s) { return sx().indexOf(s) + 1; }
+
   function sx() {
     return (data.series || []).filter(function (s) { return !s.deleted; })
       .sort(function (a, b) { return (a.created || 0) - (b.created || 0); });
@@ -195,6 +227,7 @@
       if (!s.id) s.id = uid();
       if (!s.created) s.created = base + si * 1000;
       if (!s.updated) s.updated = s.created;
+      if (!s.date) s.date = ymd(s.created);
       if (!s.deleted) s.deleted = 0;
       if (!s.matches) s.matches = [];
       s.matches.forEach(function (m, mi) {
@@ -206,21 +239,23 @@
       });
     });
     if (!d.sync) d.sync = { url: "", room: "" };
+    if (!d.versions || !d.versions.length) d.versions = ["FC 26", "FC 27"];
     if (!d.carryH2H) d.carryH2H = {};
     return d;
   }
 
   function tally(matches) {
     var t = {};
-    data.players.forEach(function (p) { t[p.id] = { w: 0, d: 0, l: 0, gf: 0, ga: 0, p: 0, pts: 0 }; });
+    data.players.forEach(function (p) { t[p.id] = { w: 0, d: 0, l: 0, gf: 0, ga: 0, p: 0 }; });
     matches.forEach(function (m) {
       if (!t[m.a] || !t[m.b]) return;
       t[m.a].p++; t[m.b].p++;
       t[m.a].gf += m.ga; t[m.a].ga += m.gb;
       t[m.b].gf += m.gb; t[m.b].ga += m.ga;
-      if (m.ga > m.gb) { t[m.a].w++; t[m.a].pts += 3; t[m.b].l++; }
-      else if (m.gb > m.ga) { t[m.b].w++; t[m.b].pts += 3; t[m.a].l++; }
-      else { t[m.a].d++; t[m.b].d++; t[m.a].pts++; t[m.b].pts++; }
+      // A drawn match counts for neither side. No points, nothing deducted.
+      if (m.ga > m.gb) { t[m.a].w++; t[m.b].l++; }
+      else if (m.gb > m.ga) { t[m.b].w++; t[m.a].l++; }
+      else { t[m.a].d++; t[m.b].d++; }
     });
     Object.keys(t).forEach(function (k) { t[k].gd = t[k].gf - t[k].ga; });
     return t;
@@ -231,17 +266,32 @@
     var ranked = data.players.map(function (p) {
       return Object.assign({ id: p.id }, t[p.id]);
     }).filter(function (r) { return r.p > 0; })
-      .sort(function (x, y) { return y.pts - x.pts || y.gd - x.gd || y.gf - x.gf; });
+      .sort(function (x, y) { return y.w - x.w || y.gd - x.gd || y.gf - x.gf; });
     var complete = mx(s).length >= data.seriesLength;
     if (!ranked.length) return { complete: complete, winner: null, shared: [], table: [] };
     var top = ranked[0];
-    var tied = ranked.filter(function (r) { return r.pts === top.pts && r.gd === top.gd && r.gf === top.gf; });
+    // Match wins decide a series and nothing else. Win 3 of 5 and it's yours,
+    // whatever the scorelines were. Level on wins is a drawn series.
+    var tied = ranked.filter(function (r) { return r.w === top.w; });
     return {
       complete: complete,
       winner: tied.length === 1 ? top.id : null,
       shared: tied.length > 1 ? tied.map(function (r) { return r.id; }) : [],
       table: ranked
     };
+  }
+
+  function ymd(ts) {
+    var d = new Date(ts);
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+  }
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function prettyDate(s) {
+    if (!s) return "";
+    var b = String(s).split("-");
+    if (b.length !== 3) return s;
+    return Number(b[2]) + " " + (MONTHS[Number(b[1]) - 1] || "") + " " + b[0];
   }
 
   function pairKey(x, y) { return [x, y].sort().join("|"); }
@@ -270,11 +320,11 @@
 
   function seasonTable() {
     var all = [];
-    sx().forEach(function (s) { all = all.concat(mx(s)); });
+    sxv().forEach(function (s) { all = all.concat(mxv(s)); });
     var t = tally(all);
     var won = {}, shared = {};
     data.players.forEach(function (p) { won[p.id] = carryOf(p.id); shared[p.id] = 0; });
-    sx().forEach(function (s) {
+    sxv().forEach(function (s) {
       var r = seriesResult(s);
       if (!r.complete) return;
       if (r.winner) won[r.winner]++;
@@ -282,7 +332,7 @@
     });
     return data.players.map(function (p, i) {
       return Object.assign({ id: p.id, name: p.name, kit: KITS[i % 3], won: won[p.id], shared: shared[p.id] }, t[p.id]);
-    }).sort(function (x, y) { return y.won - x.won || y.pts - x.pts || y.gd - x.gd; });
+    }).sort(function (x, y) { return y.won - x.won || y.w - x.w || y.gd - x.gd; });
   }
 
   /* -------------------------------- rendering ----------------------------- */
@@ -314,6 +364,15 @@
     return '<div class="stack8" style="margin-top:10px">' + out + "</div>";
   }
 
+  function versionSelect(current) {
+    var list = (data.versions || []).slice();
+    if (current && list.indexOf(current) < 0) list.unshift(current);
+    return '<select class="sel" data-ver="1">' +
+      list.map(function (v) {
+        return '<option value="' + esc(v) + '"' + (v === current ? " selected" : "") + ">" + esc(v) + "</option>";
+      }).join("") + "</select>";
+  }
+
   function teamSelect(side, current) {
     var list = data.teams.slice();
     // A team used in an old match but since deleted still needs to show.
@@ -324,10 +383,111 @@
     return '<select class="sel" data-team="' + side + '">' + opts + "</select>";
   }
 
+  // Matches in the order they were played, across every series.
+  function chronological() {
+    var out = [];
+    sxv().forEach(function (s, si) {
+      mxv(s).forEach(function (m) { out.push({ m: m, s: s, num: seriesNo(s) }); });
+    });
+    return out;
+  }
+
+  function records() {
+    var flat = chronological();
+    var r = { biggest: null, highest: null, streak: null, seriesGoals: null, bestSeries: null };
+
+    flat.forEach(function (e) {
+      var m = e.m, margin = Math.abs(m.ga - m.gb), total = m.ga + m.gb;
+      if (margin > 0 && (!r.biggest || margin > r.biggest.margin)) {
+        r.biggest = { margin: margin, e: e,
+          winner: m.ga > m.gb ? m.a : m.b, loser: m.ga > m.gb ? m.b : m.a,
+          hi: Math.max(m.ga, m.gb), lo: Math.min(m.ga, m.gb) };
+      }
+      if (!r.highest || total > r.highest.total) r.highest = { total: total, e: e };
+    });
+
+    // Longest run of match wins by one player, in order played.
+    var cur = null, best = null;
+    flat.forEach(function (e) {
+      var m = e.m;
+      var w = m.ga > m.gb ? m.a : m.gb > m.ga ? m.b : null;
+      if (w && cur && cur.id === w) cur.n++;
+      else cur = w ? { id: w, n: 1 } : null;
+      if (cur && (!best || cur.n > best.n)) best = { id: cur.id, n: cur.n };
+    });
+    if (best && best.n > 1) r.streak = best;
+
+    // Most goals by one player inside a single series, and best points haul.
+    sxv().forEach(function (s, si) {
+      var t = tally(mxv(s));
+      data.players.forEach(function (p) {
+        var row = t[p.id];
+        if (!row || !row.p) return;
+        if (!r.seriesGoals || row.gf > r.seriesGoals.goals) {
+          r.seriesGoals = { id: p.id, goals: row.gf, num: seriesNo(s), date: s.date };
+        }
+        if (!r.bestSeries || row.w > r.bestSeries.w) {
+          r.bestSeries = { id: p.id, w: row.w, num: seriesNo(s), date: s.date };
+        }
+      });
+    });
+    return r;
+  }
+
+  function recordsHTML() {
+    var r = records();
+    if (!r.biggest && !r.highest) {
+      return '<div class="panel p16">' +
+        '<div style="font-size:15px;font-weight:600;margin-bottom:12px">Records</div>' +
+        '<div class="note">Log a few matches and the records fill in.</div></div>';
+    }
+
+    function row(label, value, colour, sub) {
+      return '<div style="padding:12px 0;border-top:1px solid var(--line)">' +
+        '<div class="between">' +
+          '<span class="note">' + label + "</span>" +
+          '<span style="font-size:15px;font-weight:700;text-align:right;color:' + (colour || "var(--chalk)") + '">' +
+            value + "</span>" +
+        "</div>" +
+        (sub ? '<div class="tiny" style="text-align:right;margin-top:2px">' + sub + "</div>" : "") +
+      "</div>";
+    }
+
+    var out = "";
+    if (r.biggest) {
+      out += row("Biggest win",
+        esc(nameOf(r.biggest.winner)) + " " + r.biggest.hi + "\u2013" + r.biggest.lo + " " + esc(nameOf(r.biggest.loser)),
+        kit(r.biggest.winner),
+        "Series " + r.biggest.e.num + (r.biggest.e.s.date ? " \u00b7 " + esc(prettyDate(r.biggest.e.s.date)) : ""));
+    }
+    if (r.highest) {
+      var hm = r.highest.e.m;
+      out += row("Highest scoring match",
+        esc(nameOf(hm.a)) + " " + hm.ga + "\u2013" + hm.gb + " " + esc(nameOf(hm.b)),
+        "var(--chalk)",
+        r.highest.total + " goals \u00b7 series " + r.highest.e.num);
+    }
+    if (r.streak) {
+      out += row("Longest winning run", r.streak.n + " matches", kit(r.streak.id),
+        esc(nameOf(r.streak.id)));
+    }
+    if (r.seriesGoals) {
+      out += row("Most goals in a series", r.seriesGoals.goals + " goals", kit(r.seriesGoals.id),
+        esc(nameOf(r.seriesGoals.id)) + " \u00b7 series " + r.seriesGoals.num);
+    }
+    if (r.bestSeries) {
+      out += row("Most wins in a series", r.bestSeries.w + " of " + data.seriesLength, kit(r.bestSeries.id),
+        esc(nameOf(r.bestSeries.id)) + " \u00b7 series " + r.bestSeries.num);
+    }
+
+    return '<div class="panel p16">' +
+      '<div style="font-size:15px;font-weight:600">Records</div>' + out + "</div>";
+  }
+
   function scorerTable() {
     var t = {};
-    sx().forEach(function (s) {
-      mx(s).forEach(function (m) {
+    sxv().forEach(function (s) {
+      mxv(s).forEach(function (m) {
         (m.sc || []).forEach(function (g) {
           var n = (g.n || "").trim();
           if (!n) return;
@@ -347,8 +507,8 @@
     var list = scorerTable();
     var named = list.reduce(function (n, r) { return n + r.goals; }, 0);
     var total = 0;
-    sx().forEach(function (s) {
-      mx(s).forEach(function (m) { total += (m.ga || 0) + (m.gb || 0); });
+    sxv().forEach(function (s) {
+      mxv(s).forEach(function (m) { total += (m.ga || 0) + (m.gb || 0); });
     });
 
     var body;
@@ -382,8 +542,8 @@
 
   function teamTable() {
     var t = {};
-    sx().forEach(function (s) {
-      mx(s).forEach(function (m) {
+    sxv().forEach(function (s) {
+      mxv(s).forEach(function (m) {
         [[m.ta, m.ga, m.gb], [m.tb, m.gb, m.ga]].forEach(function (x) {
           if (!x[0]) return;
           if (!t[x[0]]) t[x[0]] = { name: x[0], p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 };
@@ -408,12 +568,12 @@
   // Everything about x vs y, told from x's side.
   function h2h(x, y) {
     var met = [];
-    sx().forEach(function (s, si) {
-      mx(s).forEach(function (m) {
+    sxv().forEach(function (s, si) {
+      mxv(s).forEach(function (m) {
         if ((m.a === x && m.b === y) || (m.a === y && m.b === x)) {
           var flip = m.a === y;
           met.push({
-            series: si + 1,
+            series: seriesNo(s),
             gx: flip ? m.gb : m.ga,
             gy: flip ? m.ga : m.gb,
             tx: flip ? m.tb : m.ta,
@@ -476,6 +636,22 @@
       '</button>';
   }
 
+  // The last five completed series, oldest on the left.
+  function formStripHTML() {
+    var done = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).slice(-5);
+    if (done.length < 2) return "";
+    var pills = done.map(function (s) {
+      var res = seriesResult(s);
+      var bg = res.winner ? kit(res.winner) : "var(--dim)";
+      var txt = res.winner ? nameOf(res.winner).trim().charAt(0).toUpperCase() : "D";
+      return '<span class="pill" style="background:' + bg + ';color:var(--ink)" title="' +
+        esc(prettyDate(s.date)) + '">' + esc(txt) + "</span>";
+    }).join("");
+    return '<div class="between" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">' +
+      '<span class="tiny">Last ' + done.length + " series</span>" +
+      '<span class="row" style="gap:5px">' + pills + "</span></div>";
+  }
+
   function standingsHTML() {
     var rows = seasonTable();
     var logged = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).length;
@@ -487,7 +663,7 @@
         '<div class="between" style="margin-bottom:4px">' +
           '<span style="font-size:14px;font-weight:600">' + esc(r.name) + '</span>' +
           '<span class="num" style="font-size:26px;color:' + r.kit + '">' + r.won +
-            (r.shared ? '<span class="tiny" style="margin-left:6px;font-family:Barlow,sans-serif">+' + r.shared + ' level</span>' : "") +
+            (r.shared ? '<span class="tiny" style="margin-left:6px;font-family:Barlow,sans-serif">' + r.shared + ' drawn</span>' : "") +
           '</span>' +
         '</div>' +
         '<div class="bar"><div style="width:' + (r.won / max) * 100 + '%;background:' + r.kit + '"></div></div>' +
@@ -497,9 +673,12 @@
     return '<div class="panel p16">' +
       '<div class="between" style="margin-bottom:16px">' +
         '<span style="font-size:15px;font-weight:600">Series won</span>' +
-        '<button data-copy="1" style="color:var(--muted);font-size:13px;font-weight:500">' + (ui.copied ? "Copied" : "Copy") + '</button>' +
+        '<span class="row" style="gap:14px">' +
+          '<button data-copy="1" style="color:var(--muted);font-size:13px;font-weight:500">' + (ui.copied ? "Copied" : "Copy") + "</button>" +
+          '<button data-share="1" style="color:var(--muted);font-size:13px;font-weight:500">Share image</button>' +
+        "</span>" +
       '</div>' +
-      '<div class="stack">' + bars + '</div>' +
+      '<div class="stack">' + bars + "</div>" + formStripHTML() +
       '<div class="tiny" style="margin-top:16px">' + done + ' series finished \u00b7 ' + played + ' matches logged' +
         (carryTotal() ? " \u00b7 " + carryTotal() + " carried over" : "") + '</div>' +
     '</div>';
@@ -541,6 +720,8 @@
         '<span style="font-size:15px;font-weight:600">' + (m ? "Edit this match" : "Log a match") + '</span>' +
         '<button data-close="1" style="color:var(--muted);font-size:20px;line-height:1">\u00d7</button>' +
       '</div>' +
+      '<div class="note" style="margin-bottom:8px">Game</div>' +
+      '<div style="margin-bottom:16px">' + versionSelect(ui.v) + "</div>" +
       '<div class="note" style="margin-bottom:8px">Tap the two who played.</div>' +
       '<div class="row" style="flex-wrap:wrap;margin-bottom:20px">' + chips + '</div>' +
       scores +
@@ -576,7 +757,7 @@
 
     var mini = res.table.map(function (r) {
       return '<span class="note"><span style="color:' + kit(r.id) + ';font-weight:700">' + esc(nameOf(r.id)) + '</span> ' +
-        r.pts + " pts \u00b7 " + (r.gd >= 0 ? "+" : "") + r.gd + '</span>';
+        r.w + (r.w === 1 ? " win" : " wins") + (r.d ? " \u00b7 " + r.d + " drawn" : "") + "</span>";
     }).join("");
 
     html += '<div class="panel p16">' +
@@ -584,6 +765,10 @@
         '<span class="num" style="font-size:30px">Series ' + num + '</span>' +
         '<span class="note">' + tm.length + " of " + data.seriesLength + ' played</span>' +
       '</div>' +
+      '<div class="row" style="gap:8px;margin-bottom:14px">' +
+        '<span class="tiny" style="flex:none">Played on</span>' +
+        '<input class="date-in" type="date" data-sdate="' + target.id + '" value="' + esc(target.date || "") + '" />' +
+      "</div>" +
       '<div class="stack8">' + slots + '</div>' +
       (mini ? '<div class="row" style="flex-wrap:wrap;gap:16px;margin-top:16px">' + mini + "</div>" : "") +
     '</div>';
@@ -594,12 +779,13 @@
       html += '<button class="btn go full" data-log="1">Log match ' + (lastM.length + 1) + "</button>";
     } else {
       html += '<div class="panel p16" style="border-color:' + (res.winner ? kit(res.winner) : "var(--line)") + '">' +
-        '<div class="note" style="margin-bottom:4px">Series ' + num + ' finished</div>' +
+        '<div class="note" style="margin-bottom:4px">Series ' + num + " \u00b7 " + esc(prettyDate(target.date)) + "</div>" +
         '<div class="num" style="font-size:28px;line-height:1.1;margin-bottom:14px;color:' +
           (res.winner ? kit(res.winner) : "var(--chalk)") + '">' +
-          (res.winner ? esc(nameOf(res.winner)) + " takes it"
-                      : "Level: " + res.shared.map(nameOf).map(esc).join(" and ")) +
+          (res.winner ? esc(nameOf(res.winner)) + " takes it" : "Series drawn") +
         '</div>' +
+        (res.winner ? "" : '<div class="note" style="margin-top:-6px;margin-bottom:14px">' +
+          esc(res.shared.map(nameOf).join(" and ")) + " level on wins. Nothing breaks it \u2014 the series is drawn.</div>") +
         '<button class="btn go full" data-new="1">Start series ' + (all.length + 1) + '</button>' +
       '</div>';
     }
@@ -713,14 +899,15 @@
     var series = [], matches = [];
     (data.series || []).forEach(function (s) {
       if ((s.updated || 0) > since) {
-        series.push({ id: s.id, created: s.created, updated: s.updated, deleted: s.deleted ? 1 : 0 });
+        series.push({ id: s.id, created: s.created, sdate: s.date || "",
+                      updated: s.updated, deleted: s.deleted ? 1 : 0 });
       }
       (s.matches || []).forEach(function (m) {
         if ((m.updated || 0) <= since) return;
         matches.push({
           id: m.id, series_id: s.id, ord: m.ord || 0,
           pa: m.a, pb: m.b, ga: m.ga, gb: m.gb, ta: m.ta || "", tb: m.tb || "",
-          sc: JSON.stringify(m.sc || []),
+          sc: JSON.stringify(m.sc || []), v: m.v || "",
           updated: m.updated, deleted: m.deleted ? 1 : 0
         });
       });
@@ -731,7 +918,8 @@
   function settingsBlob() {
     return {
       json: JSON.stringify({
-        players: data.players, teams: data.teams, seriesLength: data.seriesLength,
+        players: data.players, teams: data.teams, versions: data.versions,
+        seriesLength: data.seriesLength,
         carry: data.carry, carryH2H: data.carryH2H
       }),
       updated: data.settingsUpdated || 0
@@ -746,12 +934,13 @@
     (payload.series || []).forEach(function (row) {
       var local = byId[row.id];
       if (!local) {
-        local = { id: row.id, created: row.created, updated: row.updated,
-                  deleted: row.deleted ? 1 : 0, matches: [] };
+        local = { id: row.id, created: row.created, date: row.sdate || ymd(row.created),
+                  updated: row.updated, deleted: row.deleted ? 1 : 0, matches: [] };
         data.series.push(local);
         byId[row.id] = local;
       } else if ((row.updated || 0) > (local.updated || 0)) {
         local.created = row.created;
+        local.date = row.sdate || local.date || ymd(row.created);
         local.updated = row.updated;
         local.deleted = row.deleted ? 1 : 0;
       }
@@ -765,7 +954,7 @@
       var next = {
         id: row.id, ord: row.ord, a: row.pa, b: row.pb,
         ga: row.ga, gb: row.gb, ta: row.ta || "", tb: row.tb || "",
-        sc: parseSc(row.sc),
+        sc: parseSc(row.sc), v: row.v || "",
         updated: row.updated, deleted: row.deleted ? 1 : 0
       };
       if (!local) s.matches.push(next);
@@ -777,6 +966,7 @@
         var st = JSON.parse(payload.settings.json);
         if (st.players) data.players = st.players;
         if (st.teams) data.teams = st.teams;
+        if (st.versions) data.versions = st.versions;
         if (st.seriesLength) data.seriesLength = st.seriesLength;
         if (st.carry) data.carry = st.carry;
         if (st.carryH2H) data.carryH2H = st.carryH2H;
@@ -869,9 +1059,23 @@
     return Math.round(s / 86400) + " days ago";
   }
 
+  function filterBarHTML() {
+    var list = (data.versions || []);
+    if (list.length < 2) return "";
+    var chips = [["", "All"]].concat(list.map(function (v) { return [v, v]; }))
+      .map(function (o) {
+        var on = ui.ver === o[0];
+        return '<button class="chip" data-ver-filter="' + esc(o[0]) + '" style="' +
+          (on ? "background:var(--chalk);color:var(--ink);border-color:var(--chalk)" : "") +
+          '">' + esc(o[1]) + "</button>";
+      }).join("");
+    return '<div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:4px">' + chips + "</div>";
+  }
+
   function tableHTML() {
     var rows = seasonTable().map(function (r) {
-      return "<tr><td style='color:" + r.kit + "'>" + esc(r.name) + "</td><td>" + r.p + "</td><td>" + r.w +
+      return "<tr><td style='color:" + r.kit + "'>" + esc(r.name) + "</td><td style='font-weight:700'>" +
+        r.won + "</td><td>" + r.p + "</td><td>" + r.w +
         "</td><td>" + r.d + "</td><td>" + r.l + "</td><td>" + r.gf + "</td><td>" + r.ga + "</td><td>" +
         (r.gd >= 0 ? "+" : "") + r.gd + "</td></tr>";
     }).join("");
@@ -892,12 +1096,13 @@
 
     return '<div class="panel p16">' +
       '<div style="font-size:15px;font-weight:600;margin-bottom:12px">Every match, all series</div>' +
-      '<div style="overflow-x:auto"><table><thead><tr><th>Player</th><th>Played</th><th>W</th><th>D</th>' +
+      '<div style="overflow-x:auto"><table><thead><tr><th>Player</th><th>Series</th><th>Played</th><th>W</th><th>D</th>' +
       '<th>L</th><th>GF</th><th>GA</th><th>GD</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
       (carryTotal()
         ? '<div class="tiny" style="margin-top:12px">Only logged matches count here. The ' + carryTotal() +
           ' series carried over show in the standings but have no scorelines behind them.</div>'
         : "") + "</div>" +
+      recordsHTML() +
       scorerPanelHTML() +
       h2hHTML() +
       teamPanel;
@@ -926,28 +1131,36 @@
   }
 
   function historyHTML() {
-    var all = sx();
+    var all = sxv();
     if (!all.length) {
+      if (ui.ver) {
+        return '<div class="panel p16" style="text-align:center;padding:24px"><div class="note">' +
+          "No " + esc(ui.ver) + " series logged yet.</div></div>";
+      }
       return carryPanelHTML() + '<div class="panel p16" style="text-align:center;padding:24px"><div class="note">' +
         "Finished series will show up here with every scoreline.</div></div>";
     }
     var out = '<div class="stack8">';
     for (var i = all.length - 1; i >= 0; i--) {
       var s = all[i], res = seriesResult(s), open = ui.openSeries === s.id;
+      var shown = mxv(s);
       var label = !res.complete ? "In progress \u00b7 " + mx(s).length + " played"
-        : res.winner ? nameOf(res.winner) : "Level";
+        : res.winner ? nameOf(res.winner) : "Series drawn";
       out += '<div class="panel" style="overflow:hidden">' +
         '<button data-open="' + s.id + '" style="display:flex;width:100%;align-items:center;justify-content:space-between;padding:12px 16px;text-align:left">' +
-          '<span><span class="num" style="font-size:22px">' + (i + 1) + '</span>' +
+          '<span><span class="num" style="font-size:22px">' + seriesNo(s) + "</span>" +
           '<span style="font-size:14px;font-weight:600;margin-left:12px;color:' +
-            (res.winner ? kit(res.winner) : "var(--muted)") + '">' + esc(label) + '</span></span>' +
+            (res.winner ? kit(res.winner) : "var(--muted)") + '">' + esc(label) + "</span>" +
+          '<span class="tiny" style="margin-left:10px">' + esc(prettyDate(s.date)) + "</span></span>" +
           '<span style="color:var(--muted);font-size:13px">' + (open ? "Hide" : "Open") + '</span>' +
         '</button>';
       if (open) {
-        var lines = mx(s).map(function (m, k) { return slotHTML(m, k, false); }).join("");
+        var lines = shown.map(function (m, k) { return slotHTML(m, k, false); }).join("");
         out += '<div style="padding:0 16px 16px"><div class="stack8">' + lines + "</div>" +
           '<div class="between" style="margin-top:12px">' +
-            '<span class="tiny">' + res.table.map(function (r) { return esc(nameOf(r.id)) + " " + r.pts; }).join(" \u00b7 ") + "</span>" +
+            '<span class="tiny">' + res.table.map(function (r) {
+              return esc(nameOf(r.id)) + " " + r.w + (r.d ? " (" + r.d + "d)" : "");
+            }).join(" \u00b7 ") + "</span>" +
             '<button class="tiny" data-delseries="' + s.id + '">Delete series</button>' +
           "</div></div>";
       }
@@ -1022,6 +1235,17 @@
         '<div class="note" style="margin-bottom:12px">Changing this only affects series you start from now on.</div>' +
         '<div class="row">' + lens + "</div></div>" +
 
+      '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Games</div>' +
+        '<div class="note" style="margin-bottom:12px">Each match is tagged with one of these, so you can filter the stats by game.</div>' +
+        '<div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
+          (data.versions || []).map(function (v) {
+            return '<span class="tchip">' + esc(v) +
+              '<span data-delver="' + esc(v) + '" role="button" aria-label="Remove ' + esc(v) + '">\u00d7</span></span>';
+          }).join("") +
+        "</div>" +
+        '<div class="row"><input class="name-in" id="newver" placeholder="Add a game, e.g. FC 28" value="' + esc(ui.newVer || "") + '" />' +
+        '<button class="btn quiet" data-addver="1">Add</button></div></div>' +
+
       '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Shared log</div>' +
         '<div class="note" style="margin-bottom:12px">Put the same address and room code on all three phones and the logs merge. Leave blank to keep this phone on its own.</div>' +
         '<div class="stack8">' +
@@ -1042,20 +1266,14 @@
         '<button class="btn quiet" style="flex:1" data-import="1">Load backup</button></div>' +
         '<input type="file" id="file" accept="application/json" style="display:none" /></div>' +
 
-      '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Start the season over</div>' +
-        '<div class="note" style="margin-bottom:12px">Clears every series and scoreline. Names stay.</div>' +
-        (ui.confirming
-          ? '<div class="row"><button class="btn go" style="flex:1" data-clear="1">Yes, clear everything</button>' +
-            '<button class="btn quiet" data-cancelclear="1">Keep it</button></div>'
-          : '<button class="btn quiet" data-confirm="1">Clear all series</button>') +
-      "</div></div>";
+      "</div>";
   }
 
   function render() {
     document.getElementById("warn").innerHTML = storageOK ? "" :
       '<div class="warn">This browser isn\u2019t letting the page save. Open it from a web address rather than a downloaded file, and keep private browsing off.</div>';
 
-    document.getElementById("nav").innerHTML = [["now", "Now"], ["table", "Table"], ["history", "History"], ["settings", "Setup"]]
+    document.getElementById("nav").innerHTML = [["now", "Series"], ["table", "Table"], ["history", "History"], ["settings", "Setup"]]
       .map(function (t) { return '<button data-tab="' + t[0] + '" class="' + (ui.tab === t[0] ? "on" : "") + '">' + t[1] + "</button>"; })
       .join("");
 
@@ -1063,8 +1281,8 @@
     v.className = "stack8";
     document.getElementById("syncbar").innerHTML = syncLine();
     v.innerHTML = ui.tab === "now" ? nowHTML()
-      : ui.tab === "table" ? tableHTML()
-      : ui.tab === "history" ? historyHTML()
+      : ui.tab === "table" ? filterBarHTML() + tableHTML()
+      : ui.tab === "history" ? filterBarHTML() + historyHTML()
       : setupHTML();
   }
 
@@ -1075,14 +1293,54 @@
 
   function commit() { save(); render(); queueSync(); }
 
+  // Whatever team each player used most recently, across every series.
+  function recentTeams() {
+    var map = {};
+    sx().forEach(function (s) {
+      mx(s).forEach(function (m) {
+        if (m.ta) map[m.a] = m.ta;
+        if (m.tb) map[m.b] = m.tb;
+      });
+    });
+    return map;
+  }
+
+  // Teams follow the player, so a rotation still gets the right prefill.
+  function applyTeamPrefill() {
+    var map = recentTeams();
+    ui.ta = ui.picked[0] ? (map[ui.picked[0]] || "") : "";
+    ui.tb = ui.picked[1] ? (map[ui.picked[1]] || "") : "";
+  }
+
+  // Only carry the players over when the series so far has been the same two
+  // every match. If you've been rotating, leave the pick to the user.
+  function prefillSheet() {
+    var s = currentSeries();
+    if (!s) return;
+    var live = mx(s);
+    if (live.length) {
+      var first = [live[0].a, live[0].b].sort().join("|");
+      var sameTwo = live.every(function (m) {
+        return [m.a, m.b].sort().join("|") === first;
+      });
+      if (sameTwo) {
+        var last = live[live.length - 1];
+        ui.picked = [last.a, last.b];
+      }
+    }
+    applyTeamPrefill();
+  }
+
   function resetSheet() {
     ui.picked = []; ui.ga = 0; ui.gb = 0; ui.ta = ""; ui.tb = ""; ui.sa = []; ui.sb = [];
+    ui.v = data.lastVersion || (data.versions && data.versions[0]) || "";
   }
 
   function startSeries() {
     var now = Date.now();
-    data.series.push({ id: uid(), created: now, updated: now, deleted: 0, matches: [] });
+    data.series.push({ id: uid(), created: now, date: ymd(now), updated: now, deleted: 0, matches: [] });
     resetSheet();
+    prefillSheet();
     ui.sheet = {};
     commit();
   }
@@ -1097,6 +1355,88 @@
     commit();
   }
 
+  // Draws the standings to a canvas so it can go in the group chat as a picture.
+  function shareCard() {
+    var rows = seasonTable();
+    var W = 1080, H = 1080, c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    var x = c.getContext("2d");
+
+    x.fillStyle = "#0B1523"; x.fillRect(0, 0, W, H);
+    x.fillStyle = "#132038"; x.fillRect(60, 60, W - 120, H - 120);
+    x.strokeStyle = "#27395B"; x.lineWidth = 2; x.strokeRect(60, 60, W - 120, H - 120);
+
+    var F = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+    x.fillStyle = "#EEF2F7";
+    x.font = "700 62px " + F;
+    x.fillText("FC series log", 110, 175);
+
+    var logged = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).length;
+    x.fillStyle = "#7E93B4"; x.font = "500 30px " + F;
+    x.fillText(logged + carryTotal() + " series played", 110, 225);
+
+    var max = Math.max.apply(null, [1].concat(rows.map(function (r) { return r.won; })));
+    var y = 330;
+    rows.forEach(function (r) {
+      x.fillStyle = "#EEF2F7"; x.font = "600 40px " + F;
+      x.fillText(r.name, 110, y);
+      x.fillStyle = r.kit; x.font = "700 56px " + F;
+      x.textAlign = "right";
+      x.fillText(String(r.won), W - 110, y + 6);
+      x.textAlign = "left";
+      x.fillStyle = "#1B2C49";
+      roundRect(x, 110, y + 28, W - 220, 18, 9); x.fill();
+      x.fillStyle = r.kit;
+      roundRect(x, 110, y + 28, Math.max(18, (W - 220) * (r.won / max)), 18, 9); x.fill();
+      y += 150;
+    });
+
+    var done = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).slice(-5);
+    if (done.length >= 2) {
+      x.fillStyle = "#4E6486"; x.font = "500 26px " + F;
+      x.fillText("Last " + done.length + " series", 110, H - 165);
+      var px = 110;
+      done.forEach(function (s) {
+        var res = seriesResult(s);
+        x.fillStyle = res.winner ? kit(res.winner) : "#4E6486";
+        x.beginPath(); x.arc(px + 22, H - 118, 22, 0, Math.PI * 2); x.fill();
+        x.fillStyle = "#0B1523"; x.font = "700 24px " + F;
+        x.textAlign = "center";
+        x.fillText(res.winner ? nameOf(res.winner).charAt(0).toUpperCase() : "D", px + 22, H - 110);
+        x.textAlign = "left";
+        px += 58;
+      });
+    }
+    return c;
+  }
+
+  function roundRect(x, l, t, w, hh, r) {
+    x.beginPath();
+    x.moveTo(l + r, t);
+    x.arcTo(l + w, t, l + w, t + hh, r);
+    x.arcTo(l + w, t + hh, l, t + hh, r);
+    x.arcTo(l, t + hh, l, t, r);
+    x.arcTo(l, t, l + w, t, r);
+    x.closePath();
+  }
+
+  function shareStandings() {
+    var canvas = shareCard();
+    canvas.toBlob(function (blob) {
+      if (!blob) return;
+      var file = new File([blob], "fc-standings.png", { type: "image/png" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: "FC series log" }).catch(function () {});
+        return;
+      }
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "fc-standings.png";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    }, "image/png");
+  }
+
   function exportFile() {
     var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     var a = document.createElement("a");
@@ -1109,8 +1449,8 @@
   document.addEventListener("click", function (e) {
     var el = e.target.closest("[data-tab],[data-copy],[data-new],[data-log],[data-edit],[data-pick]," +
       "[data-goal],[data-save],[data-del],[data-close],[data-open],[data-delseries],[data-len]," +
-      "[data-confirm],[data-clear],[data-cancelclear],[data-export],[data-import]," +
-      "[data-addteam],[data-delteam],[data-pair],[data-sync]");
+      "[data-export],[data-import]," +
+      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share]");
     if (!el) return;
     var d = el.dataset;
 
@@ -1130,7 +1470,7 @@
 
     if (d.new) return startSeries();
 
-    if (d.log) { resetSheet(); ui.sheet = {}; return render(); }
+    if (d.log) { resetSheet(); prefillSheet(); ui.sheet = {}; return render(); }
 
     if (d.edit != null) {
       var m = mx(currentSeries())[+d.edit];
@@ -1144,19 +1484,17 @@
           (g.s === "a" ? ui.sa : ui.sb).push(g.n);
         });
         ui.sa.length = ui.ga; ui.sb.length = ui.gb;
+        ui.v = m.v || ui.v;
       } else ui.sheet = {};
       return render();
     }
 
     if (d.pick) {
       var i = ui.picked.indexOf(d.pick);
-      if (i > -1) {
-        ui.picked.splice(i, 1);
-        if (i === 0) { ui.ta = ui.tb; ui.tb = ""; } else ui.tb = "";
-      } else if (ui.picked.length === 2) {
-        ui.picked = [ui.picked[1], d.pick];
-        ui.ta = ui.tb; ui.tb = "";
-      } else ui.picked.push(d.pick);
+      if (i > -1) ui.picked.splice(i, 1);
+      else if (ui.picked.length === 2) ui.picked = [ui.picked[1], d.pick];
+      else ui.picked.push(d.pick);
+      applyTeamPrefill();
       return render();
     }
 
@@ -1174,13 +1512,14 @@
       var sc = [];
       ui.sa.forEach(function (n) { if (n && n.trim()) sc.push({ n: n.trim(), s: "a" }); });
       ui.sb.forEach(function (n) { if (n && n.trim()) sc.push({ n: n.trim(), s: "b" }); });
-      var rec = { a: ui.picked[0], b: ui.picked[1], ga: ui.ga, gb: ui.gb, ta: ui.ta, tb: ui.tb, sc: sc };
+      var rec = { a: ui.picked[0], b: ui.picked[1], ga: ui.ga, gb: ui.gb, ta: ui.ta, tb: ui.tb, sc: sc, v: ui.v };
       if (ui.sheet && ui.sheet.editIndex != null && live[ui.sheet.editIndex]) {
         Object.assign(touch(live[ui.sheet.editIndex]), rec);
       } else {
         s.matches.push(touch(Object.assign({ id: uid(), ord: live.length, deleted: 0 }, rec)));
       }
       touch(s);
+      data.lastVersion = ui.v;
       ui.sheet = null;
       return commit();
     }
@@ -1207,20 +1546,31 @@
 
     if (d.len) { data.seriesLength = +d.len; data.settingsUpdated = Date.now(); return commit(); }
 
-    if (d.confirm) { ui.confirming = true; return render(); }
-    if (d.cancelclear) { ui.confirming = false; return render(); }
-    if (d.clear) {
-      data.series.forEach(function (s) {
-        s.deleted = 1; touch(s);
-        s.matches.forEach(function (m) { m.deleted = 1; touch(m); });
-      });
-      ui.confirming = false;
-      return commit();
-    }
-
     if (d.pair) { ui.pair = +d.pair; return render(); }
 
+    if (el.hasAttribute("data-ver-filter")) { ui.ver = d.verFilter; return render(); }
+
     if (d.sync) return syncNow();
+
+    if (d.share) return shareStandings();
+
+    if (d.addver) {
+      var nv = (ui.newVer || "").trim();
+      if (nv && !data.versions.some(function (v) { return v.toLowerCase() === nv.toLowerCase(); })) {
+        data.versions.push(nv);
+      }
+      ui.newVer = "";
+      data.settingsUpdated = Date.now();
+      return commit();
+    }
+    if (d.delver) {
+      if (data.versions.length > 1) {
+        data.versions = data.versions.filter(function (v) { return v !== d.delver; });
+        if (ui.ver === d.delver) ui.ver = "";
+        data.settingsUpdated = Date.now();
+      }
+      return commit();
+    }
 
     if (d.addteam) return addTeam();
 
@@ -1243,6 +1593,7 @@
       save(); queueSync(); // no re-render, so the field keeps focus
     }
     if (el.id === "newteam") ui.newTeam = el.value; // ditto
+    if (el.id === "newver") ui.newVer = el.value; // ditto
     if (el.dataset && el.dataset.scorer) {
       var sp = el.dataset.scorer.split(":");
       (sp[0] === "0" ? ui.sa : ui.sb)[+sp[1]] = el.value; // no re-render, keeps focus
@@ -1272,6 +1623,12 @@
   });
 
   document.addEventListener("change", function (e) {
+    if (e.target.dataset && e.target.dataset.ver) { ui.v = e.target.value; return; }
+    if (e.target.dataset && e.target.dataset.sdate) {
+      var sd = data.series.filter(function (s) { return s.id === e.target.dataset.sdate; })[0];
+      if (sd) { sd.date = e.target.value; touch(sd); commit(); }
+      return;
+    }
     if (e.target.dataset && e.target.dataset.team) {
       if (e.target.dataset.team === "0") ui.ta = e.target.value;
       else ui.tb = e.target.value;

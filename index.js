@@ -18,21 +18,34 @@ const MAX_ROWS = 5000;
 const MAX_SETTINGS_BYTES = 64 * 1024;
 const MAX_SCORERS_BYTES = 4 * 1024;
 
-// Set this to your site's origin (e.g. "https://pratz.github.io") to stop
-// other sites calling your Worker from a browser. "*" allows any.
-const ALLOWED_ORIGIN = "*";
+// Origins allowed to call this Worker from a browser. Add your Pages URL.
+// NOTE: this only restrains browsers. curl and scripts ignore CORS entirely,
+// so the room code remains the real access control.
+const ALLOWED_ORIGINS = [
+  "https://prateek-rajpal.github.io",
+];
 
-const CORS = {
-  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Max-Age": "86400",
-};
+// Set to true only while testing from a local file or another host.
+const ALLOW_ANY_ORIGIN = false;
 
-function json(body, status = 200) {
+function corsFor(request) {
+  const origin = request.headers.get("Origin") || "";
+  const allow = ALLOW_ANY_ORIGIN
+    ? "*"
+    : ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allow,
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin",
+  };
+}
+
+function json(body, status = 200, cors = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS },
+    headers: { "Content-Type": "application/json", ...cors },
   });
 }
 
@@ -59,15 +72,15 @@ class HttpError extends Error {
   }
 }
 
-async function pull(url, env) {
+async function pull(url, env, cors) {
   const room = requireRoom(url.searchParams.get("room"));
 
   const [series, matches, settings] = await Promise.all([
     env.DB.prepare(
-      "SELECT id, created, updated, deleted FROM series WHERE room = ?"
+      "SELECT id, created, sdate, updated, deleted FROM series WHERE room = ?"
     ).bind(room).all(),
     env.DB.prepare(
-      "SELECT id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, updated, deleted FROM matches WHERE room = ?"
+      "SELECT id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, v, updated, deleted FROM matches WHERE room = ?"
     ).bind(room).all(),
     env.DB.prepare(
       "SELECT json, updated FROM settings WHERE room = ?"
@@ -79,10 +92,10 @@ async function pull(url, env) {
     matches: matches.results || [],
     settings: settings || null,
     now: Date.now(),
-  });
+  }, 200, cors);
 }
 
-async function push(request, env) {
+async function push(request, env, cors) {
   let body;
   try {
     body = await request.json();
@@ -103,10 +116,11 @@ async function push(request, env) {
   // The WHERE on DO UPDATE is what makes this last-writer-wins rather than
   // last-arriver-wins: an older row arriving late is simply ignored.
   const seriesUpsert = env.DB.prepare(
-    `INSERT INTO series (room, id, created, updated, deleted)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO series (room, id, created, sdate, updated, deleted)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(room, id) DO UPDATE SET
        created = excluded.created,
+       sdate = excluded.sdate,
        updated = excluded.updated,
        deleted = excluded.deleted
      WHERE excluded.updated > series.updated`
@@ -115,13 +129,14 @@ async function push(request, env) {
   for (const s of series) {
     if (!s || !s.id) continue;
     stmts.push(seriesUpsert.bind(
-      room, str(s.id, 64), num(s.created), num(s.updated), s.deleted ? 1 : 0
+      room, str(s.id, 64), num(s.created), str(s.sdate, 10),
+      num(s.updated), s.deleted ? 1 : 0
     ));
   }
 
   const matchUpsert = env.DB.prepare(
-    `INSERT INTO matches (room, id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, updated, deleted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO matches (room, id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, v, updated, deleted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(room, id) DO UPDATE SET
        series_id = excluded.series_id,
        ord = excluded.ord,
@@ -129,6 +144,7 @@ async function push(request, env) {
        ga = excluded.ga, gb = excluded.gb,
        ta = excluded.ta, tb = excluded.tb,
        sc = excluded.sc,
+       v = excluded.v,
        updated = excluded.updated,
        deleted = excluded.deleted
      WHERE excluded.updated > matches.updated`
@@ -139,7 +155,7 @@ async function push(request, env) {
     stmts.push(matchUpsert.bind(
       room, str(m.id, 64), str(m.series_id, 64), num(m.ord),
       str(m.pa, 32), str(m.pb, 32), num(m.ga), num(m.gb),
-      str(m.ta, 80), str(m.tb, 80), str(m.sc, MAX_SCORERS_BYTES),
+      str(m.ta, 80), str(m.tb, 80), str(m.sc, MAX_SCORERS_BYTES), str(m.v, 40),
       num(m.updated), m.deleted ? 1 : 0
     ));
   }
@@ -160,13 +176,15 @@ async function push(request, env) {
 
   if (stmts.length) await env.DB.batch(stmts);
 
-  return json({ ok: true, written: stmts.length, now: Date.now() });
+  return json({ ok: true, written: stmts.length, now: Date.now() }, 200, cors);
 }
 
 export default {
   async fetch(request, env) {
+    const cors = corsFor(request);
+
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: CORS });
+      return new Response(null, { headers: cors });
     }
 
     const url = new URL(request.url);
@@ -174,14 +192,14 @@ export default {
     try {
       if (!env.DB) throw new HttpError("D1 binding 'DB' is missing on this Worker.", 500);
 
-      if (url.pathname === "/health") return json({ ok: true, now: Date.now() });
-      if (url.pathname === "/pull" && request.method === "GET") return await pull(url, env);
-      if (url.pathname === "/push" && request.method === "POST") return await push(request, env);
+      if (url.pathname === "/health") return json({ ok: true, now: Date.now() }, 200, cors);
+      if (url.pathname === "/pull" && request.method === "GET") return await pull(url, env, cors);
+      if (url.pathname === "/push" && request.method === "POST") return await push(request, env, cors);
 
-      return json({ error: "Not found." }, 404);
+      return json({ error: "Not found." }, 404, cors);
     } catch (err) {
       const status = err instanceof HttpError ? err.status : 500;
-      return json({ error: err.message || "Server error." }, status);
+      return json({ error: err.message || "Server error." }, status, cors);
     }
   },
 };

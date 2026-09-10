@@ -1,7 +1,9 @@
 # FC 26 series log
 
 A weekly-game-night tracker for three players. Series of five matches, series
-standings, per-match scorecards, goalscorers, team records and head-to-head. Works offline,
+standings, per-match scorecards, goalscorers, team records, head-to-head,
+records board and a shareable standings image. Matches are tagged by game
+(FC 26, FC 27, …) so the stats can be filtered. Works offline,
 optionally syncs across phones through a Cloudflare Worker and a D1 database.
 
 ```
@@ -63,17 +65,19 @@ Tap **Sync now**. After that it syncs automatically on open, when the app comes
 back to the foreground, when the network returns, and about 1.5 seconds after
 any change.
 
-## Upgrading an already-deployed database
 
-Goalscorers added a column. If your D1 database was created before that, run
-this once in the D1 console, then push the updated `index.js`:
+## How a series is decided
 
-```sql
-ALTER TABLE matches ADD COLUMN sc TEXT NOT NULL DEFAULT '';
-```
+**Match wins, and nothing else.** Win 3 of 5 and the series is yours no matter
+what the scorelines were — you can win a series on a goal difference of minus
+fifteen. Level on wins is a **drawn series**, and a drawn series counts for
+nobody in the standings. Goal difference is recorded and displayed but never
+breaks a tie.
 
-Existing matches keep working — they just have no scorers recorded. Fresh
-databases get the column from `schema.sql` and need nothing extra.
+There is no points system. A drawn match counts for neither player: nothing is
+added for it and nothing is deducted for a loss. The Table tab is a record of
+what happened — played, won, drawn, lost, goals for and against — not a
+league table.
 
 ## How sync works
 
@@ -110,6 +114,15 @@ Cloudflare Workers free plan covers 100,000 requests/day and D1 gives 5 GB with
 100,000 row writes/day. Three people logging five matches a week won't come
 close. No credit card required.
 
-To stop other websites calling your Worker from a browser, set
-`ALLOWED_ORIGIN` at the top of `worker/index.js` to your Pages URL instead
-of `"*"`, then redeploy.
+## Security notes
+
+- **`ALLOWED_ORIGINS`** at the top of `worker/index.js` lists the sites allowed
+  to call the Worker from a browser. Update it if your Pages URL differs.
+  Set `ALLOW_ANY_ORIGIN = true` only while testing.
+- **CORS restrains browsers only.** `curl` ignores it. The room code is the
+  real access control, so make it long and random.
+- **The CSP meta tag** in `index.html` limits where the page can send data.
+  It currently allows any `*.workers.dev` host; narrowing it to your own
+  Worker URL is the strongest setting.
+- **Repo write access equals backend write access**, because Workers Builds
+  deploys from the repo. Keep 2FA on the GitHub account.

@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS series (
   room     TEXT    NOT NULL,
   id       TEXT    NOT NULL,
   created  INTEGER NOT NULL,
+  sdate    TEXT    NOT NULL DEFAULT '',   -- date played, YYYY-MM-DD
   updated  INTEGER NOT NULL,
   deleted  INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (room, id)
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS matches (
   ta         TEXT    NOT NULL DEFAULT '',
   tb         TEXT    NOT NULL DEFAULT '',
   sc         TEXT    NOT NULL DEFAULT '',   -- goalscorers, JSON array
+  v          TEXT    NOT NULL DEFAULT '',   -- game version, e.g. 'FC 26'
   updated    INTEGER NOT NULL,
   deleted    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (room, id)
@@ -40,4 +42,6 @@ CREATE TABLE IF NOT EXISTS settings (
 -- MIGRATION for databases created before goalscorers were added.
 -- Safe to skip on a fresh database; it errors harmlessly if the column exists.
 -- ALTER TABLE matches ADD COLUMN sc TEXT NOT NULL DEFAULT '';
+-- ALTER TABLE matches ADD COLUMN v  TEXT NOT NULL DEFAULT '';
+-- ALTER TABLE series  ADD COLUMN sdate TEXT NOT NULL DEFAULT '';
 -- ---------------------------------------------------------------------------
