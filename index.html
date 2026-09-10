@@ -124,6 +124,7 @@
   var DEFAULT = {
     seriesLength: 5,
     carry: { a: 0, b: 0, c: 0 },
+    carryH2H: {},
     teams: ["Liverpool", "Barcelona", "Real Madrid", "Bayern Munich",
             "Manchester City", "Arsenal", "PSG", "Inter Milan"],
     players: [
@@ -199,7 +200,26 @@
     };
   }
 
-  function carryOf(id) { return (data.carry && Number(data.carry[id])) || 0; }
+  function pairKey(x, y) { return [x, y].sort().join("|"); }
+
+  // Old series won against one specific opponent, from x's side.
+  function carryPair(x, y) {
+    var o = (data.carryH2H || {})[pairKey(x, y)] || {};
+    return { x: Number(o[x]) || 0, y: Number(o[y]) || 0 };
+  }
+
+  // Series carried over but never attributed to an opponent.
+  function carryLoose(id) { return (data.carry && Number(data.carry[id])) || 0; }
+
+  // Everything a player won before the app started, however it was entered.
+  function carryOf(id) {
+    var n = carryLoose(id);
+    data.players.forEach(function (p) {
+      if (p.id !== id) n += carryPair(id, p.id).x;
+    });
+    return n;
+  }
+
   function carryTotal() {
     return data.players.reduce(function (n, p) { return n + carryOf(p.id); }, 0);
   }
@@ -462,9 +482,20 @@
         '">' + esc(nameOf(p[0])) + " v " + esc(nameOf(p[1])) + "</button>";
     }).join("");
 
+    var cp = carryPair(x, y);
+    var carryLine = (cp.x || cp.y)
+      ? '<div class="between" style="padding:10px 0;border-top:1px solid var(--line)">' +
+        '<span class="note">Series before this app</span><span style="font-size:14px;font-weight:600">' +
+        '<span style="color:' + kit(x) + '">' + cp.x + "</span> \u2013 " +
+        '<span style="color:' + kit(y) + '">' + cp.y + "</span></span></div>"
+      : "";
+
     var body;
     if (!r.p) {
-      body = '<div class="note">These two haven\u2019t played each other yet in a logged series.</div>';
+      body = (carryLine
+          ? '<div style="border-top:none">' + carryLine.replace("border-top:1px solid var(--line)", "border-top:none") + "</div>"
+          : "") +
+        '<div class="note" style="margin-top:8px">No logged matches between these two yet.</div>';
     } else {
       var col = function (n, label, colour) {
         return '<div style="flex:1;text-align:center;min-width:0">' +
@@ -506,6 +537,7 @@
         "</div>" +
         '<div class="between" style="padding:10px 0;border-top:1px solid var(--line)">' +
           '<span class="note">Matches played</span><span style="font-size:14px;font-weight:600">' + r.p + "</span></div>" +
+        carryLine +
         '<div class="between" style="padding:10px 0;border-top:1px solid var(--line)">' +
           '<span class="note">Goals</span><span style="font-size:14px;font-weight:600">' +
           r.gx + " \u2013 " + r.gy + "</span></div>" +
@@ -560,13 +592,24 @@
 
   function carryPanelHTML() {
     if (!carryTotal()) return "";
-    var line = data.players.filter(function (p) { return carryOf(p.id) > 0; })
-      .map(function (p, i) {
-        return '<span style="color:' + kit(p.id) + ';font-weight:700">' + esc(p.name) + "</span> " + carryOf(p.id);
-      }).join(" \u00b7 ");
+    var lines = pairList().map(function (p) {
+      var c = carryPair(p[0], p[1]);
+      if (!c.x && !c.y) return "";
+      return '<div class="between" style="padding:6px 0">' +
+        '<span class="note"><span style="color:' + kit(p[0]) + ';font-weight:700">' + esc(nameOf(p[0])) +
+        '</span> v <span style="color:' + kit(p[1]) + ';font-weight:700">' + esc(nameOf(p[1])) + "</span></span>" +
+        '<span style="font-size:14px;font-weight:600">' + c.x + " \u2013 " + c.y + "</span></div>";
+    }).join("");
+
+    var loose = data.players.filter(function (p) { return carryLoose(p.id) > 0; })
+      .map(function (p) { return esc(p.name) + " " + carryLoose(p.id); }).join(" \u00b7 ");
+
     return '<div class="panel p16">' +
       '<div style="font-size:14px;font-weight:600;margin-bottom:4px">Before this app</div>' +
-      '<div class="note">' + line + ' \u2014 no scorelines saved for these.</div></div>';
+      '<div class="tiny" style="margin-bottom:6px">Series only \u2014 no scorelines saved.</div>' +
+      lines +
+      (loose ? '<div class="tiny" style="margin-top:8px">No opponent recorded: ' + loose + "</div>" : "") +
+      "</div>";
   }
 
   function historyHTML() {
@@ -611,20 +654,44 @@
         (on ? "background:var(--chalk);color:var(--ink)" : "border:1px solid var(--line)") + '">' + n + "</button>";
     }).join("");
 
-    var carries = data.players.map(function (p, i) {
+    var grid = pairList().map(function (p) {
+      var x = p[0], y = p[1], c = carryPair(x, y), k = pairKey(x, y);
+      return '<div style="padding:12px 0;border-top:1px solid var(--line)">' +
+        '<div class="row" style="gap:10px">' +
+          '<div style="flex:1;min-width:0;text-align:right">' +
+            '<div style="font-size:13px;font-weight:600;color:' + kit(x) + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(nameOf(x)) + "</div></div>" +
+          '<input class="carry-in" type="number" min="0" inputmode="numeric" data-cpair="' + k + ":" + x + '" value="' + c.x + '" />' +
+          '<span class="tiny" style="flex:none">v</span>' +
+          '<input class="carry-in" type="number" min="0" inputmode="numeric" data-cpair="' + k + ":" + y + '" value="' + c.y + '" />' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;font-weight:600;color:' + kit(y) + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(nameOf(y)) + "</div></div>" +
+        "</div></div>";
+    }).join("");
+
+    var loose = data.players.map(function (p, i) {
       return '<div class="row"><span class="dot" style="background:' + KITS[i % 3] + '"></span>' +
         '<span style="flex:1;font-size:14px;font-weight:600">' + esc(p.name) + "</span>" +
         '<input class="carry-in" type="number" min="0" inputmode="numeric" data-carry="' + p.id +
-        '" value="' + carryOf(p.id) + '" /></div>';
+        '" value="' + carryLoose(p.id) + '" /></div>';
     }).join("");
+
+    var looseSum = data.players.reduce(function (n, p) { return n + carryLoose(p.id); }, 0);
 
     return '<div class="stack8">' +
       '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:12px">Who\u2019s playing</div>' +
         '<div class="stack8">' + names + "</div></div>" +
 
       '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Series won before this app</div>' +
-        '<div class="note" style="margin-bottom:12px">For everything you played before you started logging. These count in the standings but add no match stats.</div>' +
-        '<div class="stack8">' + carries + "</div></div>" +
+        '<div class="note">Fill in each pairing \u2014 how many series each of you won against the other. These count in the standings and in head to head, but add no match stats.</div>' +
+        grid + "</div>" +
+
+      '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Old series with no opponent recorded</div>' +
+        '<div class="note" style="margin-bottom:12px">' +
+          (looseSum
+            ? "You have " + looseSum + " entered here from before. Move them into the pairings above, then set these to 0 so they aren\u2019t counted twice."
+            : "Only use this if you remember winning a series but not who against.") +
+        "</div>" +
+        '<div class="stack8">' + loose + "</div></div>" +
 
       '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Teams you can pick</div>' +
         '<div class="note" style="margin-bottom:12px">Remove one and past matches keep whatever they were logged with.</div>' +
@@ -815,6 +882,14 @@
       save(); // no re-render, so the field keeps focus
     }
     if (el.id === "newteam") ui.newTeam = el.value; // ditto
+    if (el.dataset && el.dataset.cpair) {
+      var bits = el.dataset.cpair.split(":"), key = bits[0], who = bits[1];
+      var v = parseInt(el.value, 10);
+      if (!data.carryH2H) data.carryH2H = {};
+      if (!data.carryH2H[key]) data.carryH2H[key] = {};
+      data.carryH2H[key][who] = isNaN(v) || v < 0 ? 0 : v;
+      save(); // no re-render, so the field keeps focus
+    }
     if (el.dataset && el.dataset.carry) {
       var n = parseInt(el.value, 10);
       if (!data.carry) data.carry = {};
