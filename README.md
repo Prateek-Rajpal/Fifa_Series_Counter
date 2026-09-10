@@ -65,6 +65,21 @@ Tap **Sync now**. After that it syncs automatically on open, when the app comes
 back to the foreground, when the network returns, and about 1.5 seconds after
 any change.
 
+## Upgrading an already-deployed database
+
+Run these once in the D1 console, then push the updated `worker/index.js`.
+Each is safe to run on its own; one erroring because the column already
+exists doesn't affect the others.
+
+```sql
+ALTER TABLE matches ADD COLUMN sc    TEXT NOT NULL DEFAULT '';
+ALTER TABLE matches ADD COLUMN v     TEXT NOT NULL DEFAULT '';
+ALTER TABLE series  ADD COLUMN sdate TEXT NOT NULL DEFAULT '';
+```
+
+Existing rows keep working — they just have no scorers, no game tag, and a
+date filled in from when the series was created. Fresh databases get all three
+columns from `schema.sql` and need nothing extra.
 
 ## How a series is decided
 
@@ -73,6 +88,13 @@ what the scorelines were — you can win a series on a goal difference of minus
 fifteen. Level on wins is a **drawn series**, and a drawn series counts for
 nobody in the standings. Goal difference is recorded and displayed but never
 breaks a tie.
+
+**A series ends as soon as it's decided.** Win the first three of five and the
+last two are never played — the app closes the series, marks the unplayed slots
+"not needed" and offers the next one. The test is whether the best anyone else
+can still reach falls short of the leader, so it also catches cases the simple
+"first to three" rule misses, and it scales if you switch to best-of-3 or
+best-of-7. Only matches actually played count towards anyone's record.
 
 There is no points system. A drawn match counts for neither player: nothing is
 added for it and nothing is deducted for a loss. The Table tab is a record of
