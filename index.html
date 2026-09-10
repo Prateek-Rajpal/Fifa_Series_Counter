@@ -111,6 +111,7 @@
   <h1>FC 26 series log</h1>
   <p class="sub">Five matches a series. Whoever ends on most points takes it.</p>
   <div id="warn"></div>
+  <div id="syncbar"></div>
   <nav id="nav"></nav>
   <div id="view"></div>
 </div>
@@ -125,6 +126,8 @@
     seriesLength: 5,
     carry: { a: 0, b: 0, c: 0 },
     carryH2H: {},
+    sync: { url: "", room: "" },
+    pushedAt: 0,
     teams: ["Liverpool", "Barcelona", "Real Madrid", "Bayern Munich",
             "Manchester City", "Arsenal", "PSG", "Inter Milan"],
     players: [
@@ -145,7 +148,7 @@
   function load() {
     try {
       var raw = localStorage.getItem(KEY);
-      if (raw) return Object.assign({}, DEFAULT, JSON.parse(raw));
+      if (raw) return normalize(Object.assign({}, DEFAULT, JSON.parse(raw)));
     } catch (e) { storageOK = false; }
     return JSON.parse(JSON.stringify(DEFAULT));
   }
@@ -166,6 +169,39 @@
   function kit(id) { return KITS[idx(id) % 3]; }
   function nameOf(id) { var p = data.players[idx(id)]; return p ? p.name : "?"; }
 
+  // Deleted records stick around as tombstones so a delete on one phone
+  // doesn't get resurrected by another phone that hadn't synced yet.
+  function mx(s) {
+    return (s.matches || []).filter(function (m) { return !m.deleted; })
+      .sort(function (a, b) { return (a.ord || 0) - (b.ord || 0); });
+  }
+  function sx() {
+    return (data.series || []).filter(function (s) { return !s.deleted; })
+      .sort(function (a, b) { return (a.created || 0) - (b.created || 0); });
+  }
+
+  // Bring older saves, and anything pulled down, up to the synced shape.
+  function normalize(d) {
+    if (!d.series) d.series = [];
+    var base = Date.now() - d.series.length * 1000;
+    d.series.forEach(function (s, si) {
+      if (!s.id) s.id = uid();
+      if (!s.created) s.created = base + si * 1000;
+      if (!s.updated) s.updated = s.created;
+      if (!s.deleted) s.deleted = 0;
+      if (!s.matches) s.matches = [];
+      s.matches.forEach(function (m, mi) {
+        if (!m.id) m.id = uid();
+        if (m.ord == null) m.ord = mi;
+        if (!m.updated) m.updated = s.created + mi;
+        if (!m.deleted) m.deleted = 0;
+      });
+    });
+    if (!d.sync) d.sync = { url: "", room: "" };
+    if (!d.carryH2H) d.carryH2H = {};
+    return d;
+  }
+
   function tally(matches) {
     var t = {};
     data.players.forEach(function (p) { t[p.id] = { w: 0, d: 0, l: 0, gf: 0, ga: 0, p: 0, pts: 0 }; });
@@ -183,12 +219,12 @@
   }
 
   function seriesResult(s) {
-    var t = tally(s.matches);
+    var t = tally(mx(s));
     var ranked = data.players.map(function (p) {
       return Object.assign({ id: p.id }, t[p.id]);
     }).filter(function (r) { return r.p > 0; })
       .sort(function (x, y) { return y.pts - x.pts || y.gd - x.gd || y.gf - x.gf; });
-    var complete = s.matches.length >= data.seriesLength;
+    var complete = mx(s).length >= data.seriesLength;
     if (!ranked.length) return { complete: complete, winner: null, shared: [], table: [] };
     var top = ranked[0];
     var tied = ranked.filter(function (r) { return r.pts === top.pts && r.gd === top.gd && r.gf === top.gf; });
@@ -226,11 +262,11 @@
 
   function seasonTable() {
     var all = [];
-    data.series.forEach(function (s) { all = all.concat(s.matches); });
+    sx().forEach(function (s) { all = all.concat(mx(s)); });
     var t = tally(all);
     var won = {}, shared = {};
     data.players.forEach(function (p) { won[p.id] = carryOf(p.id); shared[p.id] = 0; });
-    data.series.forEach(function (s) {
+    sx().forEach(function (s) {
       var r = seriesResult(s);
       if (!r.complete) return;
       if (r.winner) won[r.winner]++;
@@ -255,8 +291,8 @@
 
   function teamTable() {
     var t = {};
-    data.series.forEach(function (s) {
-      s.matches.forEach(function (m) {
+    sx().forEach(function (s) {
+      mx(s).forEach(function (m) {
         [[m.ta, m.ga, m.gb], [m.tb, m.gb, m.ga]].forEach(function (x) {
           if (!x[0]) return;
           if (!t[x[0]]) t[x[0]] = { name: x[0], p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 };
@@ -281,8 +317,8 @@
   // Everything about x vs y, told from x's side.
   function h2h(x, y) {
     var met = [];
-    data.series.forEach(function (s, si) {
-      s.matches.forEach(function (m) {
+    sx().forEach(function (s, si) {
+      mx(s).forEach(function (m) {
         if ((m.a === x && m.b === y) || (m.a === y && m.b === x)) {
           var flip = m.a === y;
           met.push({
@@ -348,9 +384,9 @@
 
   function standingsHTML() {
     var rows = seasonTable();
-    var logged = data.series.filter(function (s) { return s.matches.length >= data.seriesLength; }).length;
+    var logged = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).length;
     var done = logged + carryTotal();
-    var played = data.series.reduce(function (n, s) { return n + s.matches.length; }, 0);
+    var played = sx().reduce(function (n, s) { return n + mx(s).length; }, 0);
     var max = Math.max.apply(null, [1].concat(rows.map(function (r) { return r.won; })));
     var bars = rows.map(function (r) {
       return '<div>' +
@@ -420,7 +456,8 @@
 
   function nowHTML() {
     var html = standingsHTML();
-    var last = data.series[data.series.length - 1];
+    var all = sx();
+    var last = all[all.length - 1];
 
     if (!last) {
       return html + '<div class="panel p16" style="text-align:center;padding:24px">' +
@@ -429,13 +466,15 @@
         '<button class="btn go" data-new="1">Start series 1</button></div>';
     }
 
-    var live = last.matches.length < data.seriesLength ? last : null;
+    var lastM = mx(last);
+    var live = lastM.length < data.seriesLength ? last : null;
     var target = live || last;
-    var num = data.series.indexOf(target) + 1;
+    var tm = mx(target);
+    var num = all.indexOf(target) + 1;
     var res = seriesResult(target);
 
     var slots = "";
-    for (var i = 0; i < data.seriesLength; i++) slots += slotHTML(target.matches[i], i, true);
+    for (var i = 0; i < data.seriesLength; i++) slots += slotHTML(tm[i], i, true);
 
     var mini = res.table.map(function (r) {
       return '<span class="note"><span style="color:' + kit(r.id) + ';font-weight:700">' + esc(nameOf(r.id)) + '</span> ' +
@@ -445,16 +484,16 @@
     html += '<div class="panel p16">' +
       '<div class="between" style="margin-bottom:16px">' +
         '<span class="num" style="font-size:30px">Series ' + num + '</span>' +
-        '<span class="note">' + target.matches.length + " of " + data.seriesLength + ' played</span>' +
+        '<span class="note">' + tm.length + " of " + data.seriesLength + ' played</span>' +
       '</div>' +
       '<div class="stack8">' + slots + '</div>' +
       (mini ? '<div class="row" style="flex-wrap:wrap;gap:16px;margin-top:16px">' + mini + "</div>" : "") +
     '</div>';
 
     if (ui.sheet) {
-      html += sheetHTML(ui.sheet.editIndex, ui.sheet.editIndex != null ? target.matches[ui.sheet.editIndex] : null);
+      html += sheetHTML(ui.sheet.editIndex, ui.sheet.editIndex != null ? tm[ui.sheet.editIndex] : null);
     } else if (live) {
-      html += '<button class="btn go full" data-log="1">Log match ' + (live.matches.length + 1) + "</button>";
+      html += '<button class="btn go full" data-log="1">Log match ' + (lastM.length + 1) + "</button>";
     } else {
       html += '<div class="panel p16" style="border-color:' + (res.winner ? kit(res.winner) : "var(--line)") + '">' +
         '<div class="note" style="margin-bottom:4px">Series ' + num + ' finished</div>' +
@@ -463,7 +502,7 @@
           (res.winner ? esc(nameOf(res.winner)) + " takes it"
                       : "Level: " + res.shared.map(nameOf).map(esc).join(" and ")) +
         '</div>' +
-        '<button class="btn go full" data-new="1">Start series ' + (data.series.length + 1) + '</button>' +
+        '<button class="btn go full" data-new="1">Start series ' + (all.length + 1) + '</button>' +
       '</div>';
     }
     return html;
@@ -557,6 +596,173 @@
       body + "</div>";
   }
 
+  /* ---------------------------------- sync -------------------------------- */
+
+  var sync = { state: "idle", msg: "", at: 0, timer: null };
+
+  function syncConfigured() {
+    return !!(data.sync && data.sync.url && data.sync.room);
+  }
+
+  function endpoint(path) {
+    var base = String(data.sync.url).replace(/\/+$/, "");
+    return base + path;
+  }
+
+  // Flatten the nested store into rows the Worker understands.
+  function outboundRows() {
+    var since = data.pushedAt || 0;
+    var series = [], matches = [];
+    (data.series || []).forEach(function (s) {
+      if ((s.updated || 0) > since) {
+        series.push({ id: s.id, created: s.created, updated: s.updated, deleted: s.deleted ? 1 : 0 });
+      }
+      (s.matches || []).forEach(function (m) {
+        if ((m.updated || 0) <= since) return;
+        matches.push({
+          id: m.id, series_id: s.id, ord: m.ord || 0,
+          pa: m.a, pb: m.b, ga: m.ga, gb: m.gb, ta: m.ta || "", tb: m.tb || "",
+          updated: m.updated, deleted: m.deleted ? 1 : 0
+        });
+      });
+    });
+    return { series: series, matches: matches };
+  }
+
+  function settingsBlob() {
+    return {
+      json: JSON.stringify({
+        players: data.players, teams: data.teams, seriesLength: data.seriesLength,
+        carry: data.carry, carryH2H: data.carryH2H
+      }),
+      updated: data.settingsUpdated || 0
+    };
+  }
+
+  // Newer wins, record by record. Never drops a row the other side has.
+  function mergeDown(payload) {
+    var byId = {};
+    (data.series || []).forEach(function (s) { byId[s.id] = s; });
+
+    (payload.series || []).forEach(function (row) {
+      var local = byId[row.id];
+      if (!local) {
+        local = { id: row.id, created: row.created, updated: row.updated,
+                  deleted: row.deleted ? 1 : 0, matches: [] };
+        data.series.push(local);
+        byId[row.id] = local;
+      } else if ((row.updated || 0) > (local.updated || 0)) {
+        local.created = row.created;
+        local.updated = row.updated;
+        local.deleted = row.deleted ? 1 : 0;
+      }
+    });
+
+    (payload.matches || []).forEach(function (row) {
+      var s = byId[row.series_id];
+      if (!s) return; // its series hasn't arrived; next pull picks it up
+      var local = null;
+      for (var i = 0; i < s.matches.length; i++) if (s.matches[i].id === row.id) { local = s.matches[i]; break; }
+      var next = {
+        id: row.id, ord: row.ord, a: row.pa, b: row.pb,
+        ga: row.ga, gb: row.gb, ta: row.ta || "", tb: row.tb || "",
+        updated: row.updated, deleted: row.deleted ? 1 : 0
+      };
+      if (!local) s.matches.push(next);
+      else if ((row.updated || 0) > (local.updated || 0)) Object.assign(local, next);
+    });
+
+    if (payload.settings && payload.settings.updated > (data.settingsUpdated || 0)) {
+      try {
+        var st = JSON.parse(payload.settings.json);
+        if (st.players) data.players = st.players;
+        if (st.teams) data.teams = st.teams;
+        if (st.seriesLength) data.seriesLength = st.seriesLength;
+        if (st.carry) data.carry = st.carry;
+        if (st.carryH2H) data.carryH2H = st.carryH2H;
+        data.settingsUpdated = payload.settings.updated;
+      } catch (e) { /* leave local settings alone */ }
+    }
+    normalize(data);
+  }
+
+  function setSync(state, msg) {
+    sync.state = state;
+    sync.msg = msg || "";
+    if (state === "ok") sync.at = Date.now();
+    render();
+  }
+
+  function syncNow(quiet) {
+    if (!syncConfigured()) return Promise.resolve();
+    if (sync.state === "syncing") return Promise.resolve();
+    if (!quiet) setSync("syncing", "");
+
+    var room = encodeURIComponent(data.sync.room);
+    var mark = Date.now();
+    var out = outboundRows();
+    var body = { room: data.sync.room, series: out.series, matches: out.matches };
+    var st = settingsBlob();
+    if (st.updated) body.settings = st;
+
+    var push = (out.series.length || out.matches.length || body.settings)
+      ? fetch(endpoint("/push"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        }).then(check)
+      : Promise.resolve();
+
+    return push
+      .then(function () { data.pushedAt = mark; })
+      .then(function () { return fetch(endpoint("/pull?room=" + room)).then(check); })
+      .then(function (payload) {
+        mergeDown(payload);
+        save();
+        setSync("ok", "");
+      })
+      .catch(function (err) {
+        setSync("error", err && err.message ? err.message : "Sync failed");
+      });
+  }
+
+  function check(res) {
+    if (!res.ok) {
+      return res.text().then(function (t) {
+        var msg = "Server said " + res.status;
+        try { var j = JSON.parse(t); if (j.error) msg = j.error; } catch (e) {}
+        throw new Error(msg);
+      });
+    }
+    return res.json();
+  }
+
+  function queueSync() {
+    if (!syncConfigured()) return;
+    clearTimeout(sync.timer);
+    sync.timer = setTimeout(function () { syncNow(true); }, 1500);
+  }
+
+  function syncLine() {
+    if (!syncConfigured()) return "";
+    var txt = sync.state === "syncing" ? "Syncing\u2026"
+      : sync.state === "error" ? "Not synced \u2014 " + esc(sync.msg)
+      : sync.at ? "Synced " + ago(sync.at)
+      : "Waiting to sync";
+    var colour = sync.state === "error" ? KITS[2] : "var(--dim)";
+    return '<div class="row" style="justify-content:space-between;margin-bottom:12px">' +
+      '<span class="tiny" style="color:' + colour + '">' + txt + "</span>" +
+      '<button class="tiny" data-sync="1" style="color:var(--muted);font-weight:600">Sync now</button></div>';
+  }
+
+  function ago(ts) {
+    var s = Math.round((Date.now() - ts) / 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return Math.round(s / 60) + " min ago";
+    if (s < 86400) return Math.round(s / 3600) + " hr ago";
+    return Math.round(s / 86400) + " days ago";
+  }
+
   function tableHTML() {
     var rows = seasonTable().map(function (r) {
       return "<tr><td style='color:" + r.kit + "'>" + esc(r.name) + "</td><td>" + r.p + "</td><td>" + r.w +
@@ -613,14 +819,15 @@
   }
 
   function historyHTML() {
-    if (!data.series.length) {
+    var all = sx();
+    if (!all.length) {
       return carryPanelHTML() + '<div class="panel p16" style="text-align:center;padding:24px"><div class="note">' +
         "Finished series will show up here with every scoreline.</div></div>";
     }
     var out = '<div class="stack8">';
-    for (var i = data.series.length - 1; i >= 0; i--) {
-      var s = data.series[i], res = seriesResult(s), open = ui.openSeries === s.id;
-      var label = !res.complete ? "In progress \u00b7 " + s.matches.length + " played"
+    for (var i = all.length - 1; i >= 0; i--) {
+      var s = all[i], res = seriesResult(s), open = ui.openSeries === s.id;
+      var label = !res.complete ? "In progress \u00b7 " + mx(s).length + " played"
         : res.winner ? nameOf(res.winner) : "Level";
       out += '<div class="panel" style="overflow:hidden">' +
         '<button data-open="' + s.id + '" style="display:flex;width:100%;align-items:center;justify-content:space-between;padding:12px 16px;text-align:left">' +
@@ -630,7 +837,7 @@
           '<span style="color:var(--muted);font-size:13px">' + (open ? "Hide" : "Open") + '</span>' +
         '</button>';
       if (open) {
-        var lines = s.matches.map(function (m, k) { return slotHTML(m, k, false); }).join("");
+        var lines = mx(s).map(function (m, k) { return slotHTML(m, k, false); }).join("");
         out += '<div style="padding:0 16px 16px"><div class="stack8">' + lines + "</div>" +
           '<div class="between" style="margin-top:12px">' +
             '<span class="tiny">' + res.table.map(function (r) { return esc(nameOf(r.id)) + " " + r.pts; }).join(" \u00b7 ") + "</span>" +
@@ -708,6 +915,20 @@
         '<div class="note" style="margin-bottom:12px">Changing this only affects series you start from now on.</div>' +
         '<div class="row">' + lens + "</div></div>" +
 
+      '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Shared log</div>' +
+        '<div class="note" style="margin-bottom:12px">Put the same address and room code on all three phones and the logs merge. Leave blank to keep this phone on its own.</div>' +
+        '<div class="stack8">' +
+          '<input class="name-in" id="syncurl" placeholder="https://your-worker.workers.dev" value="' + esc(data.sync.url || "") + '" />' +
+          '<input class="name-in" id="syncroom" placeholder="Room code, e.g. thursday-lads" value="' + esc(data.sync.room || "") + '" />' +
+        "</div>" +
+        (syncConfigured()
+          ? '<div class="row" style="margin-top:12px"><button class="btn quiet" style="flex:1" data-sync="1">Sync now</button></div>' +
+            '<div class="tiny" style="margin-top:8px">' +
+              (sync.state === "error" ? "Last attempt failed: " + esc(sync.msg)
+                : sync.at ? "Last synced " + ago(sync.at) : "Not synced yet this session") + "</div>"
+          : '<div class="tiny" style="margin-top:8px">Anyone with this address and room code can read and write the log.</div>') +
+      "</div>" +
+
       '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Backup</div>' +
         '<div class="note" style="margin-bottom:12px">Save a copy to your files, or load one back in after clearing your browser.</div>' +
         '<div class="row"><button class="btn quiet" style="flex:1" data-export="1">Save backup file</button>' +
@@ -733,6 +954,7 @@
 
     var v = document.getElementById("view");
     v.className = "stack8";
+    document.getElementById("syncbar").innerHTML = syncLine();
     v.innerHTML = ui.tab === "now" ? nowHTML()
       : ui.tab === "table" ? tableHTML()
       : ui.tab === "history" ? historyHTML()
@@ -741,16 +963,18 @@
 
   /* --------------------------------- actions ------------------------------ */
 
-  function currentSeries() { return data.series[data.series.length - 1]; }
+  function currentSeries() { var a = sx(); return a[a.length - 1]; }
+  function touch(rec) { rec.updated = Date.now(); return rec; }
 
-  function commit() { save(); render(); }
+  function commit() { save(); render(); queueSync(); }
 
   function resetSheet() {
     ui.picked = []; ui.ga = 0; ui.gb = 0; ui.ta = ""; ui.tb = "";
   }
 
   function startSeries() {
-    data.series.push({ id: uid(), matches: [] });
+    var now = Date.now();
+    data.series.push({ id: uid(), created: now, updated: now, deleted: 0, matches: [] });
     resetSheet();
     ui.sheet = {};
     commit();
@@ -762,6 +986,7 @@
     var dupe = data.teams.some(function (t) { return t.toLowerCase() === name.toLowerCase(); });
     if (!dupe) data.teams.push(name);
     ui.newTeam = "";
+    data.settingsUpdated = Date.now();
     commit();
   }
 
@@ -778,7 +1003,7 @@
     var el = e.target.closest("[data-tab],[data-copy],[data-new],[data-log],[data-edit],[data-pick]," +
       "[data-goal],[data-save],[data-del],[data-close],[data-open],[data-delseries],[data-len]," +
       "[data-confirm],[data-clear],[data-cancelclear],[data-export],[data-import]," +
-      "[data-addteam],[data-delteam],[data-pair]");
+      "[data-addteam],[data-delteam],[data-pair],[data-sync]");
     if (!el) return;
     var d = el.dataset;
 
@@ -786,7 +1011,7 @@
 
     if (d.copy) {
       var rows = seasonTable();
-      var done = data.series.filter(function (s) { return s.matches.length >= data.seriesLength; }).length;
+      var done = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).length;
       var text = "FC 26 \u2014 after " + done + " series\n" +
         rows.map(function (r, i) { return (i + 1) + ". " + r.name + " \u2014 " + r.won + " series"; }).join("\n");
       if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () {
@@ -801,7 +1026,7 @@
     if (d.log) { resetSheet(); ui.sheet = {}; return render(); }
 
     if (d.edit != null) {
-      var m = currentSeries().matches[+d.edit];
+      var m = mx(currentSeries())[+d.edit];
       resetSheet();
       if (m) {
         ui.sheet = { editIndex: +d.edit };
@@ -831,17 +1056,21 @@
 
     if (d.save) {
       if (ui.picked.length !== 2) return;
-      var s = currentSeries();
+      var s = currentSeries(), live = mx(s);
       var rec = { a: ui.picked[0], b: ui.picked[1], ga: ui.ga, gb: ui.gb, ta: ui.ta, tb: ui.tb };
-      if (ui.sheet && ui.sheet.editIndex != null) s.matches[ui.sheet.editIndex] = Object.assign({ id: s.matches[ui.sheet.editIndex].id }, rec);
-      else s.matches.push(Object.assign({ id: uid() }, rec));
+      if (ui.sheet && ui.sheet.editIndex != null && live[ui.sheet.editIndex]) {
+        Object.assign(touch(live[ui.sheet.editIndex]), rec);
+      } else {
+        s.matches.push(touch(Object.assign({ id: uid(), ord: live.length, deleted: 0 }, rec)));
+      }
+      touch(s);
       ui.sheet = null;
       return commit();
     }
 
     if (d.del) {
-      var cs = currentSeries();
-      cs.matches.splice(ui.sheet.editIndex, 1);
+      var gone = mx(currentSeries())[ui.sheet.editIndex];
+      if (gone) { gone.deleted = 1; touch(gone); }
       ui.sheet = null;
       return commit();
     }
@@ -851,22 +1080,36 @@
     if (d.open) { ui.openSeries = ui.openSeries === d.open ? null : d.open; return render(); }
 
     if (d.delseries) {
-      data.series = data.series.filter(function (x) { return x.id !== d.delseries; });
+      data.series.forEach(function (s) {
+        if (s.id !== d.delseries) return;
+        s.deleted = 1; touch(s);
+        s.matches.forEach(function (m) { m.deleted = 1; touch(m); });
+      });
       return commit();
     }
 
-    if (d.len) { data.seriesLength = +d.len; return commit(); }
+    if (d.len) { data.seriesLength = +d.len; data.settingsUpdated = Date.now(); return commit(); }
 
     if (d.confirm) { ui.confirming = true; return render(); }
     if (d.cancelclear) { ui.confirming = false; return render(); }
-    if (d.clear) { data.series = []; ui.confirming = false; return commit(); }
+    if (d.clear) {
+      data.series.forEach(function (s) {
+        s.deleted = 1; touch(s);
+        s.matches.forEach(function (m) { m.deleted = 1; touch(m); });
+      });
+      ui.confirming = false;
+      return commit();
+    }
 
     if (d.pair) { ui.pair = +d.pair; return render(); }
+
+    if (d.sync) return syncNow();
 
     if (d.addteam) return addTeam();
 
     if (d.delteam) {
       data.teams = data.teams.filter(function (t) { return t !== d.delteam; });
+      data.settingsUpdated = Date.now();
       return commit();
     }
 
@@ -879,22 +1122,27 @@
     var el = e.target;
     if (el.dataset && el.dataset.name) {
       data.players[idx(el.dataset.name)].name = el.value;
-      save(); // no re-render, so the field keeps focus
+      data.settingsUpdated = Date.now();
+      save(); queueSync(); // no re-render, so the field keeps focus
     }
     if (el.id === "newteam") ui.newTeam = el.value; // ditto
+    if (el.id === "syncurl") { data.sync.url = el.value.trim(); save(); }
+    if (el.id === "syncroom") { data.sync.room = el.value.trim(); save(); }
     if (el.dataset && el.dataset.cpair) {
       var bits = el.dataset.cpair.split(":"), key = bits[0], who = bits[1];
       var v = parseInt(el.value, 10);
       if (!data.carryH2H) data.carryH2H = {};
       if (!data.carryH2H[key]) data.carryH2H[key] = {};
       data.carryH2H[key][who] = isNaN(v) || v < 0 ? 0 : v;
-      save(); // no re-render, so the field keeps focus
+      data.settingsUpdated = Date.now();
+      save(); queueSync(); // no re-render, so the field keeps focus
     }
     if (el.dataset && el.dataset.carry) {
       var n = parseInt(el.value, 10);
       if (!data.carry) data.carry = {};
       data.carry[el.dataset.carry] = isNaN(n) || n < 0 ? 0 : n;
-      save(); // ditto — standings refresh when you leave this tab
+      data.settingsUpdated = Date.now();
+      save(); queueSync(); // ditto — standings refresh when you leave this tab
     }
   });
 
@@ -914,7 +1162,7 @@
       try {
         var parsed = JSON.parse(reader.result);
         if (!parsed.players || !parsed.series) throw new Error("bad file");
-        data = Object.assign({}, DEFAULT, parsed);
+        data = normalize(Object.assign({}, DEFAULT, parsed));
         ui.tab = "now";
         commit();
       } catch (err) {
@@ -925,6 +1173,12 @@
   });
 
   render();
+
+  if (syncConfigured()) syncNow(true);
+  window.addEventListener("online", function () { syncNow(true); });
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) syncNow(true);
+  });
 })();
 </script>
 </body>

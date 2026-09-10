@@ -1,0 +1,11 @@
+# Only needed if you deploy with the Wrangler CLI instead of the dashboard.
+# The dashboard route in the README needs none of this.
+
+name = "fc26-sync"
+main = "index.js"
+compatibility_date = "2026-01-01"
+
+[[d1_databases]]
+binding = "DB"              # must stay "DB" — the Worker code looks for env.DB
+database_name = "fc26"
+database_id = "paste-your-database-id-here"
