@@ -1,7 +1,7 @@
 # FC 26 series log
 
 A weekly-game-night tracker for three players. Series of five matches, series
-standings, per-match scorecards, team records and head-to-head. Works offline,
+standings, per-match scorecards, goalscorers, team records and head-to-head. Works offline,
 optionally syncs across phones through a Cloudflare Worker and a D1 database.
 
 ```
@@ -62,6 +62,18 @@ On each phone: app → **Setup → Shared log**
 Tap **Sync now**. After that it syncs automatically on open, when the app comes
 back to the foreground, when the network returns, and about 1.5 seconds after
 any change.
+
+## Upgrading an already-deployed database
+
+Goalscorers added a column. If your D1 database was created before that, run
+this once in the D1 console, then push the updated `index.js`:
+
+```sql
+ALTER TABLE matches ADD COLUMN sc TEXT NOT NULL DEFAULT '';
+```
+
+Existing matches keep working — they just have no scorers recorded. Fresh
+databases get the column from `schema.sql` and need nothing extra.
 
 ## How sync works
 

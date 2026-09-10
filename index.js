@@ -16,6 +16,7 @@
 const ROOM_RE = /^[A-Za-z0-9_-]{4,64}$/;
 const MAX_ROWS = 5000;
 const MAX_SETTINGS_BYTES = 64 * 1024;
+const MAX_SCORERS_BYTES = 4 * 1024;
 
 // Set this to your site's origin (e.g. "https://pratz.github.io") to stop
 // other sites calling your Worker from a browser. "*" allows any.
@@ -66,7 +67,7 @@ async function pull(url, env) {
       "SELECT id, created, updated, deleted FROM series WHERE room = ?"
     ).bind(room).all(),
     env.DB.prepare(
-      "SELECT id, series_id, ord, pa, pb, ga, gb, ta, tb, updated, deleted FROM matches WHERE room = ?"
+      "SELECT id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, updated, deleted FROM matches WHERE room = ?"
     ).bind(room).all(),
     env.DB.prepare(
       "SELECT json, updated FROM settings WHERE room = ?"
@@ -119,14 +120,15 @@ async function push(request, env) {
   }
 
   const matchUpsert = env.DB.prepare(
-    `INSERT INTO matches (room, id, series_id, ord, pa, pb, ga, gb, ta, tb, updated, deleted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO matches (room, id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, updated, deleted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(room, id) DO UPDATE SET
        series_id = excluded.series_id,
        ord = excluded.ord,
        pa = excluded.pa, pb = excluded.pb,
        ga = excluded.ga, gb = excluded.gb,
        ta = excluded.ta, tb = excluded.tb,
+       sc = excluded.sc,
        updated = excluded.updated,
        deleted = excluded.deleted
      WHERE excluded.updated > matches.updated`
@@ -137,7 +139,8 @@ async function push(request, env) {
     stmts.push(matchUpsert.bind(
       room, str(m.id, 64), str(m.series_id, 64), num(m.ord),
       str(m.pa, 32), str(m.pb, 32), num(m.ga), num(m.gb),
-      str(m.ta, 80), str(m.tb, 80), num(m.updated), m.deleted ? 1 : 0
+      str(m.ta, 80), str(m.tb, 80), str(m.sc, MAX_SCORERS_BYTES),
+      num(m.updated), m.deleted ? 1 : 0
     ));
   }
 

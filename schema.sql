@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS matches (
   gb         INTEGER NOT NULL DEFAULT 0,
   ta         TEXT    NOT NULL DEFAULT '',
   tb         TEXT    NOT NULL DEFAULT '',
+  sc         TEXT    NOT NULL DEFAULT '',   -- goalscorers, JSON array
   updated    INTEGER NOT NULL,
   deleted    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (room, id)
@@ -34,3 +35,9 @@ CREATE TABLE IF NOT EXISTS settings (
   json     TEXT    NOT NULL,
   updated  INTEGER NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- MIGRATION for databases created before goalscorers were added.
+-- Safe to skip on a fresh database; it errors harmlessly if the column exists.
+-- ALTER TABLE matches ADD COLUMN sc TEXT NOT NULL DEFAULT '';
+-- ---------------------------------------------------------------------------

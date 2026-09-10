@@ -61,7 +61,7 @@
           background: var(--panel2); border: 1px solid var(--line); text-align: left; }
   .slot.empty { background: none; border: 1px dashed var(--line); color: var(--dim); font-size: 14px; }
   .slot .idx { width: 22px; font-size: 13px; font-weight: 700; color: var(--dim); flex: none; }
-  .slot .side { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .slot .side { flex: 1; font-size: 14px; overflow: hidden; }
   .slot .score { font-family: "Barlow Condensed", Barlow, sans-serif; font-size: 24px; font-weight: 700; padding: 0 8px; }
 
   .bar { height: 8px; border-radius: 99px; background: var(--panel2); overflow: hidden; }
@@ -84,6 +84,13 @@
 
   .name-in { flex: 1; border-radius: 12px; padding: 10px 12px; background: var(--panel2);
              border: 1px solid var(--line); color: var(--chalk); font-size: 15px; }
+  .sc-in { width: 100%; border-radius: 10px; padding: 8px 10px; background: var(--panel2);
+           border: 1px solid var(--line); color: var(--chalk); font-size: 13px; }
+  .scorers { display: block; font-size: 11px; font-weight: 500; color: var(--muted);
+             margin-top: 3px; line-height: 1.35; }
+  .cnt { display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+         font-weight: 600; margin-left: 8px; }
+  .cnt i { width: 7px; height: 7px; border-radius: 99px; display: inline-block; font-style: normal; }
   .pill { width: 22px; height: 22px; border-radius: 999px; display: inline-flex;
           align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
   .carry-in { width: 76px; text-align: center; border-radius: 12px; padding: 10px 8px;
@@ -140,7 +147,7 @@
 
   var storageOK = true;
   var data = load();
-  var ui = { pair: 0, tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "",
+  var ui = { pair: 0, tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [],
              newTeam: "", openSeries: null, confirming: false, copied: false };
 
   /* ------------------------------ persistence ----------------------------- */
@@ -193,6 +200,7 @@
       s.matches.forEach(function (m, mi) {
         if (!m.id) m.id = uid();
         if (m.ord == null) m.ord = mi;
+        if (!Array.isArray(m.sc)) m.sc = [];
         if (!m.updated) m.updated = s.created + mi;
         if (!m.deleted) m.deleted = 0;
       });
@@ -279,6 +287,33 @@
 
   /* -------------------------------- rendering ----------------------------- */
 
+  function knownScorers() {
+    var seen = {}, out = [];
+    sx().forEach(function (s) {
+      mx(s).forEach(function (m) {
+        (m.sc || []).forEach(function (g) {
+          var n = (g.n || "").trim();
+          if (!n || seen[n.toLowerCase()]) return;
+          seen[n.toLowerCase()] = 1;
+          out.push(n);
+        });
+      });
+    });
+    return out.sort();
+  }
+
+  function scorerInputs(side) {
+    var goals = side === 0 ? ui.ga : ui.gb;
+    var arr = side === 0 ? ui.sa : ui.sb;
+    if (!goals) return "";
+    var out = "";
+    for (var i = 0; i < goals; i++) {
+      out += '<input class="sc-in" list="scorerlist" data-scorer="' + side + ":" + i +
+        '" placeholder="Goal ' + (i + 1) + '" value="' + esc(arr[i] || "") + '" />';
+    }
+    return '<div class="stack8" style="margin-top:10px">' + out + "</div>";
+  }
+
   function teamSelect(side, current) {
     var list = data.teams.slice();
     // A team used in an old match but since deleted still needs to show.
@@ -287,6 +322,62 @@
       return '<option value="' + esc(t) + '"' + (t === current ? " selected" : "") + ">" + esc(t) + "</option>";
     }).join("");
     return '<select class="sel" data-team="' + side + '">' + opts + "</select>";
+  }
+
+  function scorerTable() {
+    var t = {};
+    sx().forEach(function (s) {
+      mx(s).forEach(function (m) {
+        (m.sc || []).forEach(function (g) {
+          var n = (g.n || "").trim();
+          if (!n) return;
+          var key = n.toLowerCase();
+          if (!t[key]) t[key] = { name: n, goals: 0, by: {} };
+          t[key].goals++;
+          var owner = g.s === "a" ? m.a : m.b;
+          t[key].by[owner] = (t[key].by[owner] || 0) + 1;
+        });
+      });
+    });
+    return Object.keys(t).map(function (k) { return t[k]; })
+      .sort(function (x, y) { return y.goals - x.goals || x.name.localeCompare(y.name); });
+  }
+
+  function scorerPanelHTML() {
+    var list = scorerTable();
+    var named = list.reduce(function (n, r) { return n + r.goals; }, 0);
+    var total = 0;
+    sx().forEach(function (s) {
+      mx(s).forEach(function (m) { total += (m.ga || 0) + (m.gb || 0); });
+    });
+
+    var body;
+    if (!list.length) {
+      body = '<div class="note">Type who scored when you log a match and the chart builds itself.</div>';
+    } else {
+      body = '<div class="stack8">' + list.slice(0, 12).map(function (r, i) {
+        var by = data.players.filter(function (p) { return r.by[p.id]; })
+          .map(function (p) {
+            return '<span class="cnt" style="color:' + kit(p.id) + '"><i style="background:' +
+              kit(p.id) + '"></i>' + r.by[p.id] + "</span>";
+          }).join("");
+        return '<div class="row" style="gap:10px">' +
+          '<span class="tiny" style="width:18px;flex:none">' + (i + 1) + "</span>" +
+          '<span style="flex:1;min-width:0;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+            esc(r.name) + "</span>" +
+          '<span style="flex:none">' + by + "</span>" +
+          '<span class="num" style="font-size:22px;width:34px;text-align:right;flex:none">' + r.goals + "</span>" +
+        "</div>";
+      }).join("") + "</div>" +
+      (named < total
+        ? '<div class="tiny" style="margin-top:12px">' + named + " of " + total +
+          " goals have a name against them. The rest were logged without one.</div>"
+        : "");
+    }
+
+    return '<div class="panel p16">' +
+      '<div style="font-size:15px;font-weight:600;margin-bottom:12px">Top scorers</div>' +
+      body + "</div>";
   }
 
   function teamTable() {
@@ -366,19 +457,22 @@
   function slotHTML(m, i, tappable) {
     if (!m) return '<div class="slot empty"><span class="idx">' + (i + 1) + '</span>Not played</div>';
     var aw = m.ga > m.gb, bw = m.gb > m.ga;
-    function sideHTML(player, team, win, align) {
+    function sideHTML(player, team, win, align, sideKey) {
+      var goals = (m.sc || []).filter(function (g) { return g.s === sideKey && g.n; })
+        .map(function (g) { return esc(g.n); }).join(", ");
       return '<span class="side" style="text-align:' + align + '">' +
         '<span style="display:block;color:' + (win ? kit(player) : "var(--muted)") +
           ';font-weight:' + (win ? 700 : 500) + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
           esc(nameOf(player)) + '</span>' +
         (team ? '<span class="team">' + esc(team) + '</span>' : "") +
+        (goals ? '<span class="scorers">' + goals + '</span>' : "") +
       '</span>';
     }
     return '<button class="slot" ' + (tappable ? 'data-edit="' + i + '"' : "") + '>' +
       '<span class="idx">' + (i + 1) + '</span>' +
-      sideHTML(m.a, m.ta, aw, "right") +
+      sideHTML(m.a, m.ta, aw, "right", "a") +
       '<span class="score">' + m.ga + "\u2013" + m.gb + '</span>' +
-      sideHTML(m.b, m.tb, bw, "left") +
+      sideHTML(m.b, m.tb, bw, "left", "b") +
       '</button>';
   }
 
@@ -434,8 +528,12 @@
               '<div class="num goals" style="color:' + kit(ui.picked[s]) + '">' + v + '</div>' +
               '<button class="step" data-goal="' + s + ':1" aria-label="One goal more">+</button>' +
             '</div>' +
+            scorerInputs(s) +
           '</div>';
-        }).join("") + '</div>';
+        }).join("") + '</div>' +
+        '<datalist id="scorerlist">' +
+          knownScorers().map(function (n) { return '<option value="' + esc(n) + '"></option>'; }).join("") +
+        "</datalist>";
     }
 
     return '<div class="panel p16">' +
@@ -622,6 +720,7 @@
         matches.push({
           id: m.id, series_id: s.id, ord: m.ord || 0,
           pa: m.a, pb: m.b, ga: m.ga, gb: m.gb, ta: m.ta || "", tb: m.tb || "",
+          sc: JSON.stringify(m.sc || []),
           updated: m.updated, deleted: m.deleted ? 1 : 0
         });
       });
@@ -666,6 +765,7 @@
       var next = {
         id: row.id, ord: row.ord, a: row.pa, b: row.pb,
         ga: row.ga, gb: row.gb, ta: row.ta || "", tb: row.tb || "",
+        sc: parseSc(row.sc),
         updated: row.updated, deleted: row.deleted ? 1 : 0
       };
       if (!local) s.matches.push(next);
@@ -684,6 +784,12 @@
       } catch (e) { /* leave local settings alone */ }
     }
     normalize(data);
+  }
+
+  function parseSc(v) {
+    if (Array.isArray(v)) return v;
+    try { var a = JSON.parse(v || "[]"); return Array.isArray(a) ? a : []; }
+    catch (e) { return []; }
   }
 
   function setSync(state, msg) {
@@ -792,6 +898,7 @@
         ? '<div class="tiny" style="margin-top:12px">Only logged matches count here. The ' + carryTotal() +
           ' series carried over show in the standings but have no scorelines behind them.</div>'
         : "") + "</div>" +
+      scorerPanelHTML() +
       h2hHTML() +
       teamPanel;
   }
@@ -969,7 +1076,7 @@
   function commit() { save(); render(); queueSync(); }
 
   function resetSheet() {
-    ui.picked = []; ui.ga = 0; ui.gb = 0; ui.ta = ""; ui.tb = "";
+    ui.picked = []; ui.ga = 0; ui.gb = 0; ui.ta = ""; ui.tb = ""; ui.sa = []; ui.sb = [];
   }
 
   function startSeries() {
@@ -1032,6 +1139,11 @@
         ui.sheet = { editIndex: +d.edit };
         ui.picked = [m.a, m.b]; ui.ga = m.ga; ui.gb = m.gb;
         ui.ta = m.ta || ""; ui.tb = m.tb || "";
+        ui.sa = []; ui.sb = [];
+        (m.sc || []).forEach(function (g) {
+          (g.s === "a" ? ui.sa : ui.sb).push(g.n);
+        });
+        ui.sa.length = ui.ga; ui.sb.length = ui.gb;
       } else ui.sheet = {};
       return render();
     }
@@ -1051,13 +1163,18 @@
     if (d.goal) {
       var parts = d.goal.split(":"), which = parts[0] === "0" ? "ga" : "gb";
       ui[which] = Math.max(0, Math.min(99, ui[which] + parseInt(parts[1], 10)));
+      var box = which === "ga" ? ui.sa : ui.sb;
+      box.length = ui[which]; // trims extra names, leaves blanks when the score goes up
       return render();
     }
 
     if (d.save) {
       if (ui.picked.length !== 2) return;
       var s = currentSeries(), live = mx(s);
-      var rec = { a: ui.picked[0], b: ui.picked[1], ga: ui.ga, gb: ui.gb, ta: ui.ta, tb: ui.tb };
+      var sc = [];
+      ui.sa.forEach(function (n) { if (n && n.trim()) sc.push({ n: n.trim(), s: "a" }); });
+      ui.sb.forEach(function (n) { if (n && n.trim()) sc.push({ n: n.trim(), s: "b" }); });
+      var rec = { a: ui.picked[0], b: ui.picked[1], ga: ui.ga, gb: ui.gb, ta: ui.ta, tb: ui.tb, sc: sc };
       if (ui.sheet && ui.sheet.editIndex != null && live[ui.sheet.editIndex]) {
         Object.assign(touch(live[ui.sheet.editIndex]), rec);
       } else {
@@ -1126,6 +1243,10 @@
       save(); queueSync(); // no re-render, so the field keeps focus
     }
     if (el.id === "newteam") ui.newTeam = el.value; // ditto
+    if (el.dataset && el.dataset.scorer) {
+      var sp = el.dataset.scorer.split(":");
+      (sp[0] === "0" ? ui.sa : ui.sb)[+sp[1]] = el.value; // no re-render, keeps focus
+    }
     if (el.id === "syncurl") { data.sync.url = el.value.trim(); save(); }
     if (el.id === "syncroom") { data.sync.room = el.value.trim(); save(); }
     if (el.dataset && el.dataset.cpair) {
