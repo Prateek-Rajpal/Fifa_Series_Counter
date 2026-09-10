@@ -273,14 +273,28 @@
       return Object.assign({ id: p.id }, t[p.id]);
     }).filter(function (r) { return r.p > 0; })
       .sort(function (x, y) { return y.w - x.w || y.gd - x.gd || y.gf - x.gf; });
-    var complete = mx(s).length >= data.seriesLength;
-    if (!ranked.length) return { complete: complete, winner: null, shared: [], table: [] };
+    var played = mx(s).length;
+    var left = Math.max(0, data.seriesLength - played);
+
+    if (!ranked.length) {
+      return { complete: false, winner: null, shared: [], table: [],
+               left: left, clinched: false, played: played };
+    }
+
     var top = ranked[0];
-    // Match wins decide a series and nothing else. Win 3 of 5 and it's yours,
-    // whatever the scorelines were. Level on wins is a drawn series.
+    var chaser = ranked[1] ? ranked[1].w : 0;
+    // Decided as soon as the best anyone else can still reach falls short of
+    // the leader. Win the first three of five and the last two aren't played.
+    var clinched = top.w > chaser + left;
+    var complete = played > 0 && (left === 0 || clinched);
+
+    // Match wins decide a series and nothing else. Level on wins is a draw.
     var tied = ranked.filter(function (r) { return r.w === top.w; });
     return {
       complete: complete,
+      clinched: clinched,
+      left: left,
+      played: played,
       winner: tied.length === 1 ? top.id : null,
       shared: tied.length > 1 ? tied.map(function (r) { return r.id; }) : [],
       table: ranked
@@ -635,8 +649,11 @@
     return r;
   }
 
-  function slotHTML(m, i, tappable) {
-    if (!m) return '<div class="slot empty"><span class="idx">' + (i + 1) + '</span>Not played</div>';
+  function slotHTML(m, i, tappable, notNeeded) {
+    if (!m) {
+      return '<div class="slot empty"><span class="idx">' + (i + 1) + "</span>" +
+        (notNeeded ? "Not needed \u2014 series already won" : "Not played") + "</div>";
+    }
     var aw = m.ga > m.gb, bw = m.gb > m.ga;
     function sideHTML(player, team, win, align, sideKey) {
       var goals = (m.sc || []).filter(function (g) { return g.s === sideKey && g.n; })
@@ -767,14 +784,16 @@
     }
 
     var lastM = mx(last);
-    var live = lastM.length < data.seriesLength ? last : null;
+    var live = seriesResult(last).complete ? null : last;
     var target = live || last;
     var tm = mx(target);
     var num = all.indexOf(target) + 1;
     var res = seriesResult(target);
 
     var slots = "";
-    for (var i = 0; i < data.seriesLength; i++) slots += slotHTML(tm[i], i, true);
+    for (var i = 0; i < data.seriesLength; i++) {
+      slots += slotHTML(tm[i], i, true, res.clinched && i >= tm.length);
+    }
 
     var mini = res.table.map(function (r) {
       return '<span class="note"><span style="color:' + kit(r.id) + ';font-weight:700">' + esc(nameOf(r.id)) + '</span> ' +
@@ -784,7 +803,10 @@
     html += '<div class="panel p16">' +
       '<div class="between" style="margin-bottom:16px">' +
         '<span class="num" style="font-size:30px">Series ' + num + '</span>' +
-        '<span class="note">' + tm.length + " of " + data.seriesLength + ' played</span>' +
+        '<span class="note">' + tm.length + " of " + data.seriesLength + " played" +
+          (live && res.table.length
+            ? " \u00b7 first to " + (Math.floor(data.seriesLength / 2) + 1)
+            : "") + "</span>" +
       '</div>' +
       '<div class="row" style="gap:8px;margin-bottom:14px">' +
         '<span class="tiny" style="flex:none">Played on</span>' +
@@ -800,17 +822,61 @@
       html += '<button class="btn go full" data-log="1">Log match ' + (lastM.length + 1) + "</button>";
     } else {
       html += '<div class="panel p16" style="border-color:' + (res.winner ? kit(res.winner) : "var(--line)") + '">' +
-        '<div class="note" style="margin-bottom:4px">Series ' + num + " \u00b7 " + esc(prettyDate(target.date)) + "</div>" +
+        '<div class="note" style="margin-bottom:4px">Series ' + num + " \u00b7 " + esc(prettyDate(target.date)) +
+          (res.clinched && res.left
+            ? " \u00b7 won with " + res.left + (res.left === 1 ? " match" : " matches") + " to spare"
+            : "") + "</div>" +
         '<div class="num" style="font-size:28px;line-height:1.1;margin-bottom:14px;color:' +
           (res.winner ? kit(res.winner) : "var(--chalk)") + '">' +
           (res.winner ? esc(nameOf(res.winner)) + " takes it" : "Series drawn") +
         '</div>' +
         (res.winner ? "" : '<div class="note" style="margin-top:-6px;margin-bottom:14px">' +
           esc(res.shared.map(nameOf).join(" and ")) + " level on wins. Nothing breaks it \u2014 the series is drawn.</div>") +
-        '<button class="btn go full" data-new="1">Start series ' + (all.length + 1) + '</button>' +
+        '<button class="btn go full" data-new="1">Start series ' + (all.length + 1) + "</button>" +
+        (res.left
+          ? '<button class="tiny" data-deadrubber="1" style="display:block;width:100%;text-align:center;margin-top:12px;color:var(--dim)">' +
+            "Log another match anyway</button>"
+          : "") +
       '</div>';
     }
     return html;
+  }
+
+  // Series that were purely between these two. A three-way series belongs to
+  // no pair, so it is left out of the head-to-head series count.
+  function pairSeries(x, y) {
+    return sxv().filter(function (s) {
+      var ms = mxv(s);
+      if (!ms.length) return false;
+      var seen = {};
+      ms.forEach(function (m) { seen[m.a] = 1; seen[m.b] = 1; });
+      var ids = Object.keys(seen);
+      return ids.length === 2 && seen[x] && seen[y];
+    });
+  }
+
+  function pairSeriesRecord(x, y) {
+    var wx = 0, wy = 0, drawn = 0, open = 0, threeWay = 0;
+    pairSeries(x, y).forEach(function (s) {
+      var r = seriesResult(s);
+      if (!r.complete) { open++; return; }
+      if (r.winner === x) wx++;
+      else if (r.winner === y) wy++;
+      else drawn++;
+    });
+    sxv().forEach(function (s) {
+      var ms = mxv(s);
+      if (!ms.length) return;
+      var seen = {};
+      ms.forEach(function (m) { seen[m.a] = 1; seen[m.b] = 1; });
+      if (Object.keys(seen).length > 2) threeWay++;
+    });
+    var cp = carryPair(x, y);
+    return {
+      wx: wx, wy: wy, drawn: drawn, open: open, threeWay: threeWay,
+      carryX: cp.x, carryY: cp.y,
+      totalX: wx + cp.x, totalY: wy + cp.y
+    };
   }
 
   function h2hHTML() {
@@ -826,20 +892,38 @@
         '">' + esc(nameOf(p[0])) + " v " + esc(nameOf(p[1])) + "</button>";
     }).join("");
 
-    var cp = carryPair(x, y);
-    var carryLine = (cp.x || cp.y)
-      ? '<div class="between" style="padding:10px 0;border-top:1px solid var(--line)">' +
-        '<span class="note">Series before this app</span><span style="font-size:14px;font-weight:600">' +
-        '<span style="color:' + kit(x) + '">' + cp.x + "</span> \u2013 " +
-        '<span style="color:' + kit(y) + '">' + cp.y + "</span></span></div>"
-      : "";
+    var sr = pairSeriesRecord(x, y);
+
+    var bigCol = function (n, label, colour, size) {
+      return '<div style="flex:1;text-align:center;min-width:0">' +
+        '<div class="num" style="font-size:' + (size || 44) + "px;color:" + colour + '">' + n + "</div>" +
+        '<div class="tiny" style="margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+          esc(label) + "</div></div>";
+    };
+
+    var seriesBlock =
+      '<div class="tiny" style="margin-bottom:8px">Series won</div>' +
+      '<div class="row" style="gap:8px">' +
+        bigCol(sr.totalX, nameOf(x), kit(x)) +
+        bigCol(sr.drawn, "drawn", "var(--muted)", 30) +
+        bigCol(sr.totalY, nameOf(y), kit(y)) +
+      "</div>" +
+      ((sr.carryX || sr.carryY)
+        ? '<div class="tiny" style="text-align:center;margin-top:8px">includes ' +
+          sr.carryX + "\u2013" + sr.carryY + " from before the app \u00b7 " +
+          sr.wx + "\u2013" + sr.wy + " logged here</div>"
+        : "") +
+      (sr.open ? '<div class="tiny" style="text-align:center;margin-top:6px">' +
+        sr.open + (sr.open === 1 ? " series" : " series") + " still open</div>" : "") +
+      (sr.threeWay ? '<div class="tiny" style="text-align:center;margin-top:6px">' +
+        sr.threeWay + " three-player " + (sr.threeWay === 1 ? "series is" : "series are") +
+        " not counted here</div>" : "");
 
     var body;
     if (!r.p) {
-      body = (carryLine
-          ? '<div style="border-top:none">' + carryLine.replace("border-top:1px solid var(--line)", "border-top:none") + "</div>"
-          : "") +
-        '<div class="note" style="margin-top:8px">No logged matches between these two yet.</div>';
+      body = seriesBlock +
+        '<div class="note" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">' +
+        "No logged matches between these two yet.</div>";
     } else {
       var col = function (n, label, colour) {
         return '<div style="flex:1;text-align:center;min-width:0">' +
@@ -874,14 +958,17 @@
       }
 
       body =
+        seriesBlock +
+        '<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">' +
+        '<div class="tiny" style="margin-bottom:8px">Individual matches</div>' +
         '<div class="row" style="gap:8px;margin-bottom:16px">' +
           col(r.wx, nameOf(x) + " wins", kit(x)) +
           col(r.d, "drawn", "var(--muted)") +
           col(r.wy, nameOf(y) + " wins", kit(y)) +
         "</div>" +
+        "</div>" +
         '<div class="between" style="padding:10px 0;border-top:1px solid var(--line)">' +
           '<span class="note">Matches played</span><span style="font-size:14px;font-weight:600">' + r.p + "</span></div>" +
-        carryLine +
         '<div class="between" style="padding:10px 0;border-top:1px solid var(--line)">' +
           '<span class="note">Goals</span><span style="font-size:14px;font-weight:600">' +
           r.gx + " \u2013 " + r.gy + "</span></div>" +
@@ -1396,6 +1483,8 @@
   /* --------------------------------- actions ------------------------------ */
 
   function currentSeries() { var a = sx(); return a[a.length - 1]; }
+  // True while the last series still has slots free, even if it's been won.
+  function hasRoom(s) { return s && mx(s).length < data.seriesLength; }
   function touch(rec) { rec.updated = Date.now(); return rec; }
 
   function commit() { save(); render(); queueSync(); }
@@ -1557,7 +1646,7 @@
     var el = e.target.closest("[data-tab],[data-copy],[data-new],[data-log],[data-edit],[data-pick]," +
       "[data-goal],[data-save],[data-del],[data-close],[data-open],[data-delseries],[data-len]," +
       "[data-export],[data-import]," +
-      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share]");
+      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share],[data-deadrubber]");
     if (!el) return;
     var d = el.dataset;
 
@@ -1577,7 +1666,7 @@
 
     if (d.new) return startSeries();
 
-    if (d.log) { resetSheet(); prefillSheet(); ui.sheet = {}; return render(); }
+    if (d.log || d.deadrubber) { resetSheet(); prefillSheet(); ui.sheet = {}; return render(); }
 
     if (d.edit != null) {
       var m = mx(currentSeries())[+d.edit];
