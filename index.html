@@ -148,6 +148,13 @@
   "use strict";
 
   var KEY = "fc26:log:v1";
+
+  // Optional. Fill these in and everyone who opens the page is set up with no
+  // link needed. WARNING: this file is public on GitHub, so anything you put
+  // in DEFAULT_ROOM is public too — anyone could read and overwrite the log.
+  // Leave DEFAULT_ROOM empty and share an invite link instead (Setup screen).
+  var DEFAULT_URL = "";
+  var DEFAULT_ROOM = "";
   var KITS = ["#FFB627", "#3FD6C4", "#FF5E7A"];
   var DEFAULT = {
     seriesLength: 5,
@@ -170,7 +177,7 @@
   var storageOK = true;
   var data = load();
   var ui = { pair: 0, ver: "", day: "", player: "", tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [], v: "",
-             newTeam: "", newVer: "", openSeries: null, confirming: false, copied: false };
+             newTeam: "", newVer: "", invited: false, inviteText: "", openSeries: null, confirming: false, copied: false };
 
   /* ------------------------------ persistence ----------------------------- */
 
@@ -246,6 +253,8 @@
       });
     });
     if (!d.sync) d.sync = { url: "", room: "" };
+    if (!d.sync.url && DEFAULT_URL) d.sync.url = DEFAULT_URL;
+    if (!d.sync.room && DEFAULT_ROOM) d.sync.room = DEFAULT_ROOM;
     if (!d.versions || !d.versions.length) d.versions = ["FC 26", "FC 27"];
     if (!d.carryH2H) d.carryH2H = {};
     return d;
@@ -1297,6 +1306,78 @@
 
   var sync = { state: "idle", msg: "", at: 0, timer: null };
 
+  // An invite link carries the Worker address and room code in the fragment,
+  // which browsers never send to the server. Applied once, then wiped from
+  // the address bar so it isn't left sitting in history.
+  function readInviteLink() {
+    var hash = (location.hash || "").replace(/^#/, "");
+    if (!hash) return false;
+    var q;
+    try { q = new URLSearchParams(hash); } catch (e) { return false; }
+    var room = (q.get("room") || "").trim();
+    var url = (q.get("s") || "").trim();
+    if (!room && !url) return false;
+
+    var changed = false;
+    var already = data.sync.room;
+    if (room && room !== already) {
+      if (already && !window.confirm(
+            "This link joins the room \"" + room + "\".\n\n" +
+            "You're currently on \"" + already + "\". Switch?")) {
+        wipeHash();
+        return false;
+      }
+      data.sync.room = room;
+      changed = true;
+    }
+    if (url && url !== data.sync.url) { data.sync.url = url; changed = true; }
+
+    if (changed) { data.pushedAt = 0; save(); } // re-push everything into the room
+    wipeHash();
+    return changed;
+  }
+
+  function wipeHash() {
+    try {
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch (e) {
+      location.hash = "";
+    }
+  }
+
+  function inviteLink() {
+    if (!syncConfigured()) return "";
+    return location.origin + location.pathname +
+      "#room=" + encodeURIComponent(data.sync.room) +
+      "&s=" + encodeURIComponent(data.sync.url);
+  }
+
+  function shareInvite() {
+    var link = inviteLink();
+    if (!link) return;
+    if (navigator.share) {
+      navigator.share({ title: "FC series log", text: "Join our log", url: link })
+        .catch(function () { copyInvite(link); });
+      return;
+    }
+    copyInvite(link);
+  }
+
+  function copyInvite(link) {
+    function done() {
+      ui.invited = true; ui.inviteText = ""; render();
+      setTimeout(function () { ui.invited = false; render(); }, 1800);
+    }
+    // No clipboard on plain http, in older browsers, or when permission is
+    // refused. Show the link instead so it can still be copied by hand.
+    function fallback() { ui.inviteText = link; ui.invited = false; render(); }
+
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return fallback();
+    try {
+      navigator.clipboard.writeText(link).then(done, fallback);
+    } catch (e) { fallback(); }
+  }
+
   function syncConfigured() {
     return !!(data.sync && data.sync.url && data.sync.room);
   }
@@ -1753,7 +1834,15 @@
           '<input class="name-in" id="syncroom" placeholder="Room code, e.g. thursday-lads" value="' + esc(data.sync.room || "") + '" />' +
         "</div>" +
         (syncConfigured()
-          ? '<div class="row" style="margin-top:12px"><button class="btn quiet" style="flex:1" data-sync="1">Sync now</button></div>' +
+          ? '<div class="row" style="margin-top:12px;gap:8px">' +
+              '<button class="btn quiet" style="flex:1" data-sync="1">Sync now</button>' +
+              '<button class="btn quiet" style="flex:1" data-invite="1">' +
+                (ui.invited ? "Link copied" : "Invite link") + "</button></div>" +
+            '<div class="tiny" style="margin-top:8px">The invite link sets both fields automatically on any phone that opens it. It contains your room code, so only send it to the three of you.</div>' +
+            (ui.inviteText
+              ? '<div style="margin-top:10px"><div class="tiny" style="margin-bottom:6px">Copy this link and send it to them:</div>' +
+                '<input class="name-in" style="width:100%" readonly value="' + esc(ui.inviteText) + '" data-selectall="1" /></div>'
+              : "") +
             '<div class="tiny" style="margin-top:8px">' +
               (sync.state === "error" ? "Last attempt failed: " + esc(sync.msg)
                 : sync.at ? "Last synced " + ago(sync.at) : "Not synced yet this session") + "</div>"
@@ -1953,7 +2042,7 @@
     var el = e.target.closest("[data-tab],[data-copy],[data-new],[data-log],[data-edit],[data-pick]," +
       "[data-goal],[data-save],[data-del],[data-close],[data-open],[data-delseries],[data-len]," +
       "[data-export],[data-import]," +
-      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share],[data-deadrubber],[data-player]");
+      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share],[data-deadrubber],[data-player],[data-invite],[data-selectall]");
     if (!el) return;
     var d = el.dataset;
 
@@ -2059,6 +2148,10 @@
 
     if (d.share) return shareStandings();
 
+    if (d.invite) return shareInvite();
+
+    if (d.selectall) { try { el.select(); } catch (e) {} return; }
+
     if (d.addver) {
       var nv = (ui.newVer || "").trim();
       if (nv && !data.versions.some(function (v) { return v.toLowerCase() === nv.toLowerCase(); })) {
@@ -2156,6 +2249,7 @@
     reader.readAsText(e.target.files[0]);
   });
 
+  readInviteLink();
   render();
 
   if (syncConfigured()) syncNow(true);

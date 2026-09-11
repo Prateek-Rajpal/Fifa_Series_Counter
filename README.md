@@ -55,6 +55,20 @@ the binding didn't save or the Worker wasn't redeployed after adding it.
 
 ## Part 3 — connect the phones
 
+Set up your own phone first (below), then use **Setup → Invite link**. That
+copies a link with the Worker address and room code in the URL fragment. Anyone
+who opens it is configured automatically — no typing.
+
+The fragment (everything after `#`) is never sent to a web server by the
+browser, so the room code doesn't end up in GitHub's or Cloudflare's logs. It
+is still readable by anyone holding the link, so send it only to the two of
+them.
+
+If someone opening the link is already in a different room, they're asked
+before switching.
+
+### Manual setup
+
 On each phone: app → **Setup → Shared log**
 
 - Address: your `https://fc26-sync.<subdomain>.workers.dev` URL
@@ -137,6 +151,11 @@ Cloudflare Workers free plan covers 100,000 requests/day and D1 gives 5 GB with
 close. No credit card required.
 
 ## Security notes
+
+- **Never hardcode the room code in `index.html`.** There are `DEFAULT_URL` and
+  `DEFAULT_ROOM` constants at the top of the script for a zero-setup install,
+  but this repo is public — anything you put in `DEFAULT_ROOM` can be read by
+  anyone, who could then wipe your log. Use the invite link instead.
 
 - **`ALLOWED_ORIGINS`** at the top of `worker/index.js` lists the sites allowed
   to call the Worker from a browser. Update it if your Pages URL differs.
