@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS series (
   id       TEXT    NOT NULL,
   created  INTEGER NOT NULL,
   sdate    TEXT    NOT NULL DEFAULT '',   -- date played, YYYY-MM-DD
+  casual   INTEGER NOT NULL DEFAULT 0,    -- 1 = one-off matches, not a series
   updated  INTEGER NOT NULL,
   deleted  INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (room, id)
@@ -44,4 +45,5 @@ CREATE TABLE IF NOT EXISTS settings (
 -- ALTER TABLE matches ADD COLUMN sc TEXT NOT NULL DEFAULT '';
 -- ALTER TABLE matches ADD COLUMN v  TEXT NOT NULL DEFAULT '';
 -- ALTER TABLE series  ADD COLUMN sdate TEXT NOT NULL DEFAULT '';
+-- ALTER TABLE series  ADD COLUMN casual INTEGER NOT NULL DEFAULT 0;
 -- ---------------------------------------------------------------------------

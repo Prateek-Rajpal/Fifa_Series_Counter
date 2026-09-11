@@ -86,9 +86,10 @@ Each is safe to run on its own; one erroring because the column already
 exists doesn't affect the others.
 
 ```sql
-ALTER TABLE matches ADD COLUMN sc    TEXT NOT NULL DEFAULT '';
-ALTER TABLE matches ADD COLUMN v     TEXT NOT NULL DEFAULT '';
-ALTER TABLE series  ADD COLUMN sdate TEXT NOT NULL DEFAULT '';
+ALTER TABLE matches ADD COLUMN sc     TEXT NOT NULL DEFAULT '';
+ALTER TABLE matches ADD COLUMN v      TEXT NOT NULL DEFAULT '';
+ALTER TABLE series  ADD COLUMN sdate  TEXT NOT NULL DEFAULT '';
+ALTER TABLE series  ADD COLUMN casual INTEGER NOT NULL DEFAULT 0;
 ```
 
 Existing rows keep working — they just have no scorers, no game tag, and a
@@ -114,6 +115,14 @@ There is no points system. A drawn match counts for neither player: nothing is
 added for it and nothing is deducted for a loss. The Table tab is a record of
 what happened — played, won, drawn, lost, goals for and against — not a
 league table.
+
+## One-off matches
+
+Not everything is a series. The Series tab has a **One-off matches** card for
+casual games — they count towards goals, scorers, team records, head-to-head
+matches and everything on the Player tab, but never towards series won, series
+played, or who took the night. In History they show with a bullet instead of a
+series number.
 
 ## How sync works
 

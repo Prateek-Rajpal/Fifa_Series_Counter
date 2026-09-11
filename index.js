@@ -77,7 +77,7 @@ async function pull(url, env, cors) {
 
   const [series, matches, settings] = await Promise.all([
     env.DB.prepare(
-      "SELECT id, created, sdate, updated, deleted FROM series WHERE room = ?"
+      "SELECT id, created, sdate, casual, updated, deleted FROM series WHERE room = ?"
     ).bind(room).all(),
     env.DB.prepare(
       "SELECT id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, v, updated, deleted FROM matches WHERE room = ?"
@@ -116,11 +116,12 @@ async function push(request, env, cors) {
   // The WHERE on DO UPDATE is what makes this last-writer-wins rather than
   // last-arriver-wins: an older row arriving late is simply ignored.
   const seriesUpsert = env.DB.prepare(
-    `INSERT INTO series (room, id, created, sdate, updated, deleted)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO series (room, id, created, sdate, casual, updated, deleted)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(room, id) DO UPDATE SET
        created = excluded.created,
        sdate = excluded.sdate,
+       casual = excluded.casual,
        updated = excluded.updated,
        deleted = excluded.deleted
      WHERE excluded.updated > series.updated`
@@ -129,7 +130,7 @@ async function push(request, env, cors) {
   for (const s of series) {
     if (!s || !s.id) continue;
     stmts.push(seriesUpsert.bind(
-      room, str(s.id, 64), num(s.created), str(s.sdate, 10),
+      room, str(s.id, 64), num(s.created), str(s.sdate, 10), s.casual ? 1 : 0,
       num(s.updated), s.deleted ? 1 : 0
     ));
   }

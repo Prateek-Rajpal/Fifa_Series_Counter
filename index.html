@@ -177,7 +177,7 @@
   var storageOK = true;
   var data = load();
   var ui = { pair: 0, ver: "", day: "", player: "", tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [], v: "",
-             newTeam: "", newVer: "", invited: false, inviteText: "", openSeries: null, confirming: false, copied: false };
+             newTeam: "", newVer: "", invited: false, inviteText: "", editScorer: "", scorerNew: "", target: "", openSeries: null, confirming: false, copied: false };
 
   /* ------------------------------ persistence ----------------------------- */
 
@@ -219,8 +219,22 @@
     return sx().filter(function (s) { return !ui.ver || mx(s).some(verOK); });
   }
 
+  // Real series only. One-off matches live in "casual" buckets that never
+  // become a series, so they are excluded from series numbering and counting.
+  function sxs() { return sx().filter(function (s) { return !s.casual; }); }
+  function casualFor(date) {
+    var hit = null;
+    sx().forEach(function (s) { if (s.casual && s.date === date) hit = s; });
+    return hit;
+  }
+  function seriesById(id) {
+    var hit = null;
+    data.series.forEach(function (s) { if (s.id === id) hit = s; });
+    return hit;
+  }
+
   // A series keeps its real number whatever the version filter is showing.
-  function seriesNo(s) { return sx().indexOf(s) + 1; }
+  function seriesNo(s) { return sxs().indexOf(s) + 1; }
 
   function sx() {
     return (data.series || []).filter(function (s) { return !s.deleted; })
@@ -242,6 +256,7 @@
       if (!s.created) s.created = base + si * 1000;
       if (!s.updated) s.updated = s.created;
       if (!s.date) s.date = ymd(s.created);
+      if (!s.casual) s.casual = 0;
       if (!s.deleted) s.deleted = 0;
       if (!s.matches) s.matches = [];
       s.matches.forEach(function (m, mi) {
@@ -284,6 +299,10 @@
     }).filter(function (r) { return r.p > 0; })
       .sort(function (x, y) { return y.w - x.w || y.gd - x.gd || y.gf - x.gf; });
     var played = mx(s).length;
+    if (s.casual) {
+      return { casual: true, complete: false, clinched: false, left: 0,
+               played: played, winner: null, shared: [], table: ranked };
+    }
     var left = Math.max(0, data.seriesLength - played);
 
     if (!ranked.length) {
@@ -348,20 +367,53 @@
     return data.players.reduce(function (n, p) { return n + carryOf(p.id); }, 0);
   }
 
+  // Series a player lost before the app: every series their opponent won.
+  function carryLost(id) {
+    var n = 0;
+    data.players.forEach(function (p) {
+      if (p.id !== id) n += carryPair(id, p.id).y;
+    });
+    return n;
+  }
+
   function seasonTable() {
     var all = [];
     sxv().forEach(function (s) { all = all.concat(mxv(s)); });
     var t = tally(all);
-    var won = {}, shared = {};
-    data.players.forEach(function (p) { won[p.id] = carryOf(p.id); shared[p.id] = 0; });
+
+    var won = {}, shared = {}, lost = {}, played = {};
+    data.players.forEach(function (p) {
+      won[p.id] = 0; shared[p.id] = 0; lost[p.id] = 0; played[p.id] = 0;
+    });
+
     sxv().forEach(function (s) {
+      if (s.casual) return;
       var r = seriesResult(s);
       if (!r.complete) return;
-      if (r.winner) won[r.winner]++;
-      else r.shared.forEach(function (id) { shared[id]++; });
+      var involved = {};
+      mxv(s).forEach(function (m) { involved[m.a] = 1; involved[m.b] = 1; });
+      data.players.forEach(function (p) {
+        if (!involved[p.id]) return;       // sat that one out
+        played[p.id]++;
+        if (r.winner === p.id) won[p.id]++;
+        else if (r.winner) lost[p.id]++;
+        else shared[p.id]++;
+      });
     });
+
+    // Fold in everything from before the app.
+    data.players.forEach(function (p) {
+      var cw = carryOf(p.id), cl = carryLost(p.id);
+      won[p.id] += cw;
+      lost[p.id] += cl;
+      played[p.id] += cw + cl;
+    });
+
     return data.players.map(function (p, i) {
-      return Object.assign({ id: p.id, name: p.name, kit: KITS[i % 3], won: won[p.id], shared: shared[p.id] }, t[p.id]);
+      return Object.assign({
+        id: p.id, name: p.name, kit: KITS[i % 3],
+        won: won[p.id], shared: shared[p.id], slost: lost[p.id], splayed: played[p.id]
+      }, t[p.id]);
     }).sort(function (x, y) { return y.won - x.won || y.w - x.w || y.gd - x.gd; });
   }
 
@@ -450,6 +502,7 @@
 
     // Most goals by one player inside a single series, and best points haul.
     sxv().forEach(function (s, si) {
+      if (s.casual) return;
       var t = tally(mxv(s));
       data.players.forEach(function (p) {
         var row = t[p.id];
@@ -546,6 +599,134 @@
     });
     return Object.keys(t).map(function (k) { return t[k]; })
       .sort(function (x, y) { return y.goals - x.goals || x.name.localeCompare(y.name); });
+  }
+
+  // Strip case, spaces, punctuation and accents so "Del Piero", "delpiero"
+  // and "Del-Piero" all collapse to the same key.
+  function flatten(s) {
+    return String(s).toLowerCase()
+      .normalize ? String(s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "")
+      : String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  function editDistance(a, b) {
+    if (a === b) return 0;
+    if (Math.abs(a.length - b.length) > 2) return 99;
+    var prev = [], cur = [], i, j;
+    for (j = 0; j <= b.length; j++) prev[j] = j;
+    for (i = 1; i <= a.length; i++) {
+      cur[0] = i;
+      for (j = 1; j <= b.length; j++) {
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1,
+          prev[j - 1] + (a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1));
+      }
+      for (j = 0; j <= b.length; j++) prev[j] = cur[j];
+    }
+    return prev[b.length];
+  }
+
+  // Every spelling actually stored, with how many goals each one holds.
+  function scorerSpellings() {
+    var map = {}, order = [];
+    sx().forEach(function (s) {
+      mx(s).forEach(function (m) {
+        (m.sc || []).forEach(function (g) {
+          var n = (g.n || "").trim();
+          if (!n) return;
+          if (!map[n]) { map[n] = { name: n, goals: 0 }; order.push(n); }
+          map[n].goals++;
+        });
+      });
+    });
+    return order.map(function (k) { return map[k]; })
+      .sort(function (a, b) { return b.goals - a.goals || a.name.localeCompare(b.name); });
+  }
+
+  // Spellings that look like the same player. Groups are keyed on the
+  // flattened form first, then near-misses within edit distance 2.
+  function scorerDuplicates() {
+    var list = scorerSpellings();
+    var groups = [], used = {};
+    list.forEach(function (a, i) {
+      if (used[a.name]) return;
+      var fa = flatten(a.name);
+      var group = [a];
+      list.forEach(function (b, j) {
+        if (j <= i || used[b.name]) return;
+        var fb = flatten(b.name);
+        if (fa === fb || (fa.length > 3 && editDistance(fa, fb) <= 2)) {
+          group.push(b);
+          used[b.name] = 1;
+        }
+      });
+      if (group.length > 1) {
+        used[a.name] = 1;
+        groups.push(group.sort(function (x, y) { return y.goals - x.goals; }));
+      }
+    });
+    return groups;
+  }
+
+  // Rewrite one spelling everywhere. Touching each match makes the change
+  // sync to the other phones like any other edit.
+  function renameScorer(from, to) {
+    to = (to || "").trim();
+    if (!to || to === from) return 0;
+    var hits = 0;
+    data.series.forEach(function (s) {
+      var touched = false;
+      (s.matches || []).forEach(function (m) {
+        var changed = false;
+        (m.sc || []).forEach(function (g) {
+          if (g.n === from) { g.n = to; changed = true; hits++; }
+        });
+        if (changed) { touch(m); touched = true; }
+      });
+      if (touched) touch(s);
+    });
+    if (hits) commit();
+    return hits;
+  }
+
+  function scorerFixHTML() {
+    var list = scorerSpellings();
+    if (!list.length) return "";
+
+    var dupes = scorerDuplicates();
+    var warn = dupes.length
+      ? '<div class="warn" style="margin:0 0 12px">' +
+        dupes.map(function (g) {
+          var keep = g[0];
+          return "These look like the same player: " +
+            g.map(function (x) { return "<b>" + esc(x.name) + "</b> (" + x.goals + ")"; }).join(", ") +
+            '<div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">' +
+            g.slice(1).map(function (x) {
+              return '<button class="chip" data-mergescorer="' + esc(x.name) + "\u0001" + esc(keep.name) +
+                '">Merge into ' + esc(keep.name) + "</button>";
+            }).join("") + "</div>";
+        }).join('<div style="height:10px"></div>') + "</div>"
+      : "";
+
+    var rows = list.map(function (r) {
+      if (ui.editScorer === r.name) {
+        return '<div class="row" style="gap:8px">' +
+          '<input class="name-in" id="scorerrename" value="' + esc(ui.scorerNew) + '" />' +
+          '<button class="btn quiet" data-saverename="' + esc(r.name) + '">Save</button>' +
+          '<button class="btn quiet" data-cancelrename="1">\u00d7</button></div>';
+      }
+      return '<button class="row" data-editscorer="' + esc(r.name) + '" ' +
+        'style="width:100%;gap:10px;padding:8px 0;text-align:left">' +
+        '<span style="flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+          esc(r.name) + "</span>" +
+        '<span class="tiny">' + r.goals + (r.goals === 1 ? " goal" : " goals") + "</span>" +
+        '<span class="tiny" style="color:var(--dim)">edit</span></button>';
+    }).join("");
+
+    return '<div class="panel p16">' +
+      '<div style="font-size:15px;font-weight:600;margin-bottom:4px">Goalscorer names</div>' +
+      '<div class="note" style="margin-bottom:12px">Tap a name to correct its spelling. The change applies to every match and syncs to the other phones.</div>' +
+      warn +
+      '<div class="stack8">' + rows + "</div></div>";
   }
 
   function scorerPanelHTML() {
@@ -766,7 +947,7 @@
 
   // The last five completed series, oldest on the left.
   function formStripHTML() {
-    var done = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).slice(-5);
+    var done = sx().filter(function (s) { return seriesResult(s).complete; }).slice(-5);
     if (done.length < 2) return "";
     var pills = done.map(function (s) {
       var res = seriesResult(s);
@@ -782,7 +963,7 @@
 
   function standingsHTML() {
     var rows = seasonTable();
-    var logged = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).length;
+    var logged = sxs().filter(function (s) { return seriesResult(s).complete; }).length;
     var done = logged + carryTotal();
     var played = sx().reduce(function (n, s) { return n + mx(s).length; }, 0);
     var max = Math.max.apply(null, [1].concat(rows.map(function (r) { return r.won; })));
@@ -795,7 +976,11 @@
           '</span>' +
         '</div>' +
         '<div class="bar"><div style="width:' + (r.won / max) * 100 + '%;background:' + r.kit + '"></div></div>' +
-      '</div>';
+        '<div class="tiny" style="margin-top:5px">' + r.splayed + " played \u00b7 " +
+          r.won + " won \u00b7 " + r.shared + " drawn \u00b7 " + r.slost + " lost" +
+          (r.splayed ? " \u00b7 " + Math.round((r.won / r.splayed) * 100) + "% won" : "") +
+        "</div>" +
+      "</div>";
     }).join("");
 
     return '<div class="panel p16">' +
@@ -807,8 +992,9 @@
         "</span>" +
       '</div>' +
       '<div class="stack">' + bars + "</div>" + formStripHTML() +
-      '<div class="tiny" style="margin-top:16px">' + done + ' series finished \u00b7 ' + played + ' matches logged' +
-        (carryTotal() ? " \u00b7 " + carryTotal() + " carried over" : "") + '</div>' +
+      '<div class="tiny" style="margin-top:16px">' + done + " series played in total \u00b7 " +
+        played + " matches logged" +
+        (carryTotal() ? " \u00b7 " + carryTotal() + " of those from before the app" : "") + "</div>" +
     '</div>';
   }
 
@@ -861,16 +1047,43 @@
     '</div>';
   }
 
+  function casualCardHTML() {
+    var today = ymd(Date.now());
+    var bucket = casualFor(today);
+    var live = bucket ? mx(bucket) : [];
+    var open = ui.sheet && ui.target && bucket && ui.target === bucket.id;
+
+    var body = "";
+    if (live.length) {
+      body = '<div class="stack8" style="margin-bottom:12px">' +
+        live.map(function (m, i) {
+          return slotHTML(m, i, true).replace('data-edit="' + i + '"',
+            'data-edit="' + i + '" data-target="' + bucket.id + '"');
+        }).join("") + "</div>";
+    }
+
+    return '<div class="panel p16">' +
+      '<div class="between" style="margin-bottom:' + (live.length ? "12" : "4") + 'px">' +
+        '<span style="font-size:15px;font-weight:600">One-off matches</span>' +
+        (live.length ? '<span class="note">' + live.length + " today</span>" : "") +
+      "</div>" +
+      (live.length ? "" : '<div class="note" style="margin-bottom:12px">Matches that aren\u2019t part of a series. They count towards goals, scorers, teams and head to head, but never towards series won.</div>') +
+      body +
+      (open ? "" : '<button class="btn quiet full" data-oneoff="1">Log a one-off match</button>') +
+      "</div>";
+  }
+
   function nowHTML() {
     var html = standingsHTML();
-    var all = sx();
+    var all = sxs();
     var last = all[all.length - 1];
 
     if (!last) {
       return html + '<div class="panel p16" style="text-align:center;padding:24px">' +
         '<div style="font-size:17px;font-weight:600;margin-bottom:6px">Nothing logged yet</div>' +
         '<div class="note" style="margin-bottom:16px">Start series 1 and add each match as you finish it.</div>' +
-        '<button class="btn go" data-new="1">Start series 1</button></div>';
+        '<button class="btn go" data-new="1">Start series 1</button></div>' +
+        casualCardHTML();
     }
 
     var lastM = mx(last);
@@ -906,6 +1119,12 @@
       (mini ? '<div class="row" style="flex-wrap:wrap;gap:16px;margin-top:16px">' + mini + "</div>" : "") +
     '</div>';
 
+    if (ui.sheet && ui.target) {
+      var tgt = seriesById(ui.target), tml = tgt ? mx(tgt) : [];
+      return html + casualCardHTML() +
+        sheetHTML(ui.sheet.editIndex, ui.sheet.editIndex != null ? tml[ui.sheet.editIndex] : null);
+    }
+
     if (ui.sheet) {
       html += sheetHTML(ui.sheet.editIndex, ui.sheet.editIndex != null ? tm[ui.sheet.editIndex] : null);
     } else if (live) {
@@ -927,15 +1146,16 @@
           ? '<button class="tiny" data-deadrubber="1" style="display:block;width:100%;text-align:center;margin-top:12px;color:var(--dim)">' +
             "Log another match anyway</button>"
           : "") +
-      '</div>';
+      "</div>";
     }
-    return html;
+    return html + casualCardHTML();
   }
 
   // Series that were purely between these two. A three-way series belongs to
   // no pair, so it is left out of the head-to-head series count.
   function pairSeries(x, y) {
     return sxv().filter(function (s) {
+      if (s.casual) return false;
       var ms = mxv(s);
       if (!ms.length) return false;
       var seen = {};
@@ -1027,6 +1247,7 @@
 
     // Series this player actually took part in.
     sxv().forEach(function (s) {
+      if (s.casual) return;
       var played = mxv(s).some(function (m) { return m.a === pid || m.b === pid; });
       if (!played) return;
       var r = seriesResult(s);
@@ -1036,7 +1257,10 @@
       else if (r.winner) st.seriesLost++;
       else st.seriesDrawn++;
     });
-    st.seriesWon += carryOf(pid);
+    var cw = carryOf(pid), cl = carryLost(pid);
+    st.seriesWon += cw;
+    st.seriesLost += cl;
+    st.seriesPlayed += cw + cl;
 
     var teamList = Object.keys(st.teams).map(function (k) { return st.teams[k]; });
     st.favTeam = teamList.slice().sort(function (a, b) { return b.p - a.p || b.w - a.w; })[0] || null;
@@ -1394,6 +1618,7 @@
     (data.series || []).forEach(function (s) {
       if ((s.updated || 0) > since) {
         series.push({ id: s.id, created: s.created, sdate: s.date || "",
+                      casual: s.casual ? 1 : 0,
                       updated: s.updated, deleted: s.deleted ? 1 : 0 });
       }
       (s.matches || []).forEach(function (m) {
@@ -1429,12 +1654,14 @@
       var local = byId[row.id];
       if (!local) {
         local = { id: row.id, created: row.created, date: row.sdate || ymd(row.created),
+                  casual: row.casual ? 1 : 0,
                   updated: row.updated, deleted: row.deleted ? 1 : 0, matches: [] };
         data.series.push(local);
         byId[row.id] = local;
       } else if ((row.updated || 0) > (local.updated || 0)) {
         local.created = row.created;
         local.date = row.sdate || local.date || ymd(row.created);
+        local.casual = row.casual ? 1 : 0;
         local.updated = row.updated;
         local.deleted = row.deleted ? 1 : 0;
       }
@@ -1648,6 +1875,7 @@
     data.players.forEach(function (p) { won[p.id] = 0; });
     var done = 0, drawn = 0;
     list.forEach(function (s) {
+      if (s.casual) return;
       var r = seriesResult(s);
       if (!r.complete) return;
       done++;
@@ -1679,17 +1907,20 @@
       .map(function (x) {
         return '<span style="color:' + kit(x.id) + ';font-weight:700">' + esc(nameOf(x.id)) + "</span> " + x.n;
       }).join(" \u00b7 ");
-    var verdict = r.done === 0 ? "in progress"
+    var verdict = r.done === 0 ? ""
       : r.winner ? esc(nameOf(r.winner)) + " took the night"
       : "night shared";
+    var oneoffs = g.list.reduce(function (n, s) { return n + (s.casual ? mxv(s).length : 0); }, 0);
+    var realSeries = g.list.filter(function (s) { return !s.casual; }).length;
     return '<div style="margin:18px 0 8px">' +
       '<div class="between" style="align-items:baseline">' +
         '<span class="num" style="font-size:22px">' + esc(prettyDate(g.date) || "No date") + "</span>" +
         '<span style="font-size:13px;font-weight:600;color:' +
           (r.winner ? kit(r.winner) : "var(--muted)") + '">' + verdict + "</span>" +
       "</div>" +
-      '<div class="tiny" style="margin-top:2px">' + g.list.length +
-        (g.list.length === 1 ? " series" : " series") +
+      '<div class="tiny" style="margin-top:2px">' +
+        (realSeries ? realSeries + (realSeries === 1 ? " series" : " series") : "") +
+        (oneoffs ? (realSeries ? " \u00b7 " : "") + oneoffs + " one-off" + (oneoffs === 1 ? "" : "s") : "") +
         (r.drawn ? " \u00b7 " + r.drawn + " drawn" : "") +
         (tally ? " \u00b7 " + tally : "") + "</div></div>";
   }
@@ -1723,11 +1954,13 @@
       g.list.forEach(function (s) {
         var res = seriesResult(s), open = ui.openSeries === s.id;
         var shown = mxv(s);
-        var label = !res.complete ? "In progress \u00b7 " + mx(s).length + " played"
+        var label = s.casual ? "One-off matches"
+          : !res.complete ? "In progress \u00b7 " + mx(s).length + " played"
           : res.winner ? nameOf(res.winner) : "Series drawn";
         out += '<div class="panel" style="overflow:hidden">' +
           '<button data-open="' + s.id + '" style="display:flex;width:100%;align-items:center;justify-content:space-between;padding:12px 16px;text-align:left">' +
-            '<span><span class="num" style="font-size:22px">' + seriesNo(s) + "</span>" +
+            '<span><span class="num" style="font-size:22px">' +
+              (s.casual ? "\u2022" : seriesNo(s)) + "</span>" +
             '<span style="font-size:14px;font-weight:600;margin-left:12px;color:' +
               (res.winner ? kit(res.winner) : "var(--muted)") + '">' + esc(label) + "</span></span>" +
             '<span style="color:var(--muted);font-size:13px">' + (open ? "Hide" : "Open") + "</span>" +
@@ -1738,7 +1971,8 @@
             '<div class="between" style="margin-top:12px">' +
               '<span class="tiny">' + res.table.map(function (r) {
                 return esc(nameOf(r.id)) + " " + r.w + (r.d ? " (" + r.d + "d)" : "");
-              }).join(" \u00b7 ") + "</span>" +
+              }).join(" \u00b7 ") +
+              (s.casual ? " \u00b7 not counted as a series" : "") + "</span>" +
               '<button class="tiny" data-delseries="' + s.id + '">Delete series</button>' +
             "</div></div>";
         }
@@ -1849,6 +2083,8 @@
           : '<div class="tiny" style="margin-top:8px">Anyone with this address and room code can read and write the log.</div>') +
       "</div>" +
 
+      scorerFixHTML() +
+
       '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Backup</div>' +
         '<div class="note" style="margin-bottom:12px">Save a copy to your files, or load one back in after clearing your browser.</div>' +
         '<div class="row"><button class="btn quiet" style="flex:1" data-export="1">Save backup file</button>' +
@@ -1878,7 +2114,7 @@
 
   /* --------------------------------- actions ------------------------------ */
 
-  function currentSeries() { var a = sx(); return a[a.length - 1]; }
+  function currentSeries() { var a = sxs(); return a[a.length - 1]; }
   // True while the last series still has slots free, even if it's been won.
   function hasRoom(s) { return s && mx(s).length < data.seriesLength; }
   function touch(rec) { rec.updated = Date.now(); return rec; }
@@ -1907,8 +2143,8 @@
   // Only carry the players over when the series so far has been the same two
   // every match. If you've been rotating, leave the pick to the user.
   function prefillSheet() {
-    var s = currentSeries();
-    if (!s) return;
+    var s = (ui.target && seriesById(ui.target)) || currentSeries();
+    if (!s) { applyTeamPrefill(); return; }
     var live = mx(s);
     if (live.length) {
       var first = [live[0].a, live[0].b].sort().join("|");
@@ -1963,7 +2199,7 @@
     x.font = "700 62px " + F;
     x.fillText("FC series log", 110, 175);
 
-    var logged = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).length;
+    var logged = sx().filter(function (s) { return seriesResult(s).complete; }).length;
     x.fillStyle = "#7E93B4"; x.font = "500 30px " + F;
     x.fillText(logged + carryTotal() + " series played", 110, 225);
 
@@ -1983,7 +2219,7 @@
       y += 150;
     });
 
-    var done = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).slice(-5);
+    var done = sx().filter(function (s) { return seriesResult(s).complete; }).slice(-5);
     if (done.length >= 2) {
       x.fillStyle = "#4E6486"; x.font = "500 26px " + F;
       x.fillText("Last " + done.length + " series", 110, H - 165);
@@ -2042,7 +2278,7 @@
     var el = e.target.closest("[data-tab],[data-copy],[data-new],[data-log],[data-edit],[data-pick]," +
       "[data-goal],[data-save],[data-del],[data-close],[data-open],[data-delseries],[data-len]," +
       "[data-export],[data-import]," +
-      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share],[data-deadrubber],[data-player],[data-invite],[data-selectall]");
+      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share],[data-deadrubber],[data-player],[data-invite],[data-selectall],[data-editscorer],[data-saverename],[data-cancelrename],[data-mergescorer],[data-oneoff],[data-target]");
     if (!el) return;
     var d = el.dataset;
 
@@ -2050,7 +2286,7 @@
 
     if (d.copy) {
       var rows = seasonTable();
-      var done = sx().filter(function (s) { return mx(s).length >= data.seriesLength; }).length;
+      var done = sx().filter(function (s) { return seriesResult(s).complete; }).length;
       var text = "FC 26 \u2014 after " + done + " series\n" +
         rows.map(function (r, i) { return (i + 1) + ". " + r.name + " \u2014 " + r.won + " series"; }).join("\n");
       if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () {
@@ -2062,10 +2298,28 @@
 
     if (d.new) return startSeries();
 
-    if (d.log || d.deadrubber) { resetSheet(); prefillSheet(); ui.sheet = {}; return render(); }
+    if (d.log || d.deadrubber) {
+      ui.target = "";
+      resetSheet(); prefillSheet(); ui.sheet = {}; return render();
+    }
+
+    if (d.oneoff) {
+      var today = ymd(Date.now());
+      var bucket = casualFor(today);
+      if (!bucket) {
+        var bnow = Date.now();
+        bucket = { id: uid(), created: bnow, date: today, casual: 1,
+                   updated: bnow, deleted: 0, matches: [] };
+        data.series.push(bucket);
+        save();
+      }
+      ui.target = bucket.id;
+      resetSheet(); prefillSheet(); ui.sheet = {}; return render();
+    }
 
     if (d.edit != null) {
-      var m = mx(currentSeries())[+d.edit];
+      ui.target = d.target || "";
+      var m = mx((ui.target && seriesById(ui.target)) || currentSeries())[+d.edit];
       resetSheet();
       if (m) {
         ui.sheet = { editIndex: +d.edit };
@@ -2100,7 +2354,9 @@
 
     if (d.save) {
       if (ui.picked.length !== 2) return;
-      var s = currentSeries(), live = mx(s);
+      var s = (ui.target && seriesById(ui.target)) || currentSeries();
+      if (!s) return;
+      var live = mx(s);
       var sc = [];
       ui.sa.forEach(function (n) { if (n && n.trim()) sc.push({ n: n.trim(), s: "a" }); });
       ui.sb.forEach(function (n) { if (n && n.trim()) sc.push({ n: n.trim(), s: "b" }); });
@@ -2117,7 +2373,7 @@
     }
 
     if (d.del) {
-      var gone = mx(currentSeries())[ui.sheet.editIndex];
+      var gone = mx((ui.target && seriesById(ui.target)) || currentSeries())[ui.sheet.editIndex];
       if (gone) { gone.deleted = 1; touch(gone); }
       ui.sheet = null;
       return commit();
@@ -2149,6 +2405,19 @@
     if (d.share) return shareStandings();
 
     if (d.invite) return shareInvite();
+
+    if (d.editscorer) { ui.editScorer = d.editscorer; ui.scorerNew = d.editscorer; return render(); }
+    if (d.cancelrename) { ui.editScorer = ""; ui.scorerNew = ""; return render(); }
+    if (d.saverename) {
+      var n = renameScorer(d.saverename, ui.scorerNew);
+      ui.editScorer = ""; ui.scorerNew = "";
+      return n ? undefined : render();
+    }
+    if (d.mergescorer) {
+      var parts = d.mergescorer.split("\u0001");
+      renameScorer(parts[0], parts[1]);
+      return;
+    }
 
     if (d.selectall) { try { el.select(); } catch (e) {} return; }
 
@@ -2192,6 +2461,7 @@
     }
     if (el.id === "newteam") ui.newTeam = el.value; // ditto
     if (el.id === "newver") ui.newVer = el.value; // ditto
+    if (el.id === "scorerrename") ui.scorerNew = el.value; // ditto
     if (el.dataset && el.dataset.scorer) {
       var sp = el.dataset.scorer.split(":");
       (sp[0] === "0" ? ui.sa : ui.sb)[+sp[1]] = el.value; // no re-render, keeps focus
