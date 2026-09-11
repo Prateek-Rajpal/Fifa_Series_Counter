@@ -58,8 +58,9 @@
   button:focus-visible, input:focus-visible { outline: 2px solid var(--chalk); outline-offset: 2px; }
   input { font-family: inherit; outline: none; }
 
-  nav { display: flex; gap: 4px; background: var(--panel); border-radius: 16px; padding: 4px; margin-bottom: 16px; }
-  nav button { flex: 1; border-radius: 12px; padding: 9px 0; font-size: 14px; font-weight: 600; color: var(--muted); }
+  nav { display: flex; gap: 2px; background: var(--panel); border-radius: 16px; padding: 4px; margin-bottom: 16px; }
+  nav button { flex: 1; border-radius: 10px; padding: 9px 2px; font-size: 13px; font-weight: 600;
+                color: var(--muted); white-space: nowrap; }
   nav button.on { background: var(--panel2); color: var(--chalk); }
 
   .btn { border-radius: 12px; padding: 13px 16px; font-size: 14px; font-weight: 600; }
@@ -168,7 +169,7 @@
 
   var storageOK = true;
   var data = load();
-  var ui = { pair: 0, ver: "", day: "", tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [], v: "",
+  var ui = { pair: 0, ver: "", day: "", player: "", tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [], v: "",
              newTeam: "", newVer: "", openSeries: null, confirming: false, copied: false };
 
   /* ------------------------------ persistence ----------------------------- */
@@ -575,6 +576,86 @@
       body + "</div>";
   }
 
+  // Which club has faced which, across every match. Keyed on the pair of
+  // teams, so it doesn't matter who was controlling them.
+  function rivalryTable() {
+    var map = {}, sameTeam = 0, keys = [];
+    sxv().forEach(function (s) {
+      mxv(s).forEach(function (m) {
+        var A = (m.ta || "").trim(), B = (m.tb || "").trim();
+        if (!A || !B) return;
+        if (A === B) { sameTeam++; return; }
+        var pair = [A, B].sort();
+        var key = pair.join("\u0000");
+        var r = map[key];
+        if (!r) {
+          r = map[key] = { x: pair[0], y: pair[1], n: 0, wx: 0, wy: 0, d: 0,
+                           gx: 0, gy: 0, best: null, last: null };
+          keys.push(key);
+        }
+        var xIsHome = r.x === A;
+        var gx = xIsHome ? m.ga : m.gb;
+        var gy = xIsHome ? m.gb : m.ga;
+        r.n++; r.gx += gx; r.gy += gy;
+        if (gx > gy) r.wx++; else if (gy > gx) r.wy++; else r.d++;
+        var margin = Math.abs(gx - gy);
+        if (margin && (!r.best || margin > r.best.margin)) {
+          r.best = { margin: margin, team: gx > gy ? r.x : r.y,
+                     hi: Math.max(gx, gy), lo: Math.min(gx, gy) };
+        }
+        r.last = { gx: gx, gy: gy, date: s.date }; // series are in date order
+      });
+    });
+    return {
+      list: keys.map(function (k) { return map[k]; })
+        .sort(function (a, b) { return b.n - a.n || (b.gx + b.gy) - (a.gx + a.gy); }),
+      sameTeam: sameTeam
+    };
+  }
+
+  function rivalryHTML() {
+    var rv = rivalryTable();
+    if (!rv.list.length) {
+      return '<div class="panel p16">' +
+        '<div style="font-size:15px;font-weight:600;margin-bottom:12px">Team rivalries</div>' +
+        '<div class="note">Pick a team for both sides when you log a match and the fixtures build up here.</div></div>';
+    }
+
+    var rows = rv.list.slice(0, 8).map(function (r) {
+      var edge = r.wx > r.wy ? r.x : r.wy > r.wx ? r.y : null;
+      return '<div style="padding:12px 0;border-top:1px solid var(--line)">' +
+        '<div class="between" style="align-items:baseline;gap:10px">' +
+          '<span style="font-size:14px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+            esc(r.x) + '<span style="color:var(--dim);font-weight:500"> v </span>' + esc(r.y) + "</span>" +
+          '<span class="tiny" style="flex:none">' + r.n + (r.n === 1 ? " meeting" : " meetings") + "</span>" +
+        "</div>" +
+        '<div style="font-size:13px;font-weight:600;margin-top:4px;color:' +
+          (edge ? "var(--chalk)" : "var(--muted)") + '">' +
+          r.wx + "\u2013" + r.d + "\u2013" + r.wy +
+          '<span class="tiny" style="font-weight:500"> (' + esc(r.x) + " wins \u2013 drawn \u2013 " + esc(r.y) + " wins)</span>" +
+        "</div>" +
+        '<div class="tiny" style="margin-top:3px">goals ' + r.gx + "\u2013" + r.gy +
+          (r.best ? " \u00b7 biggest " + esc(r.best.team) + " " + r.best.hi + "\u2013" + r.best.lo : "") +
+          (r.last ? " \u00b7 last " + r.last.gx + "\u2013" + r.last.gy +
+            (r.last.date ? " on " + esc(prettyDate(r.last.date)) : "") : "") +
+        "</div></div>";
+    }).join("");
+
+    var top = rv.list[0];
+    var lead = top.wx === top.wy
+      ? "Nothing between them after " + top.n + " meetings."
+      : (top.wx > top.wy ? esc(top.x) : esc(top.y)) + " has the edge in your most played fixture.";
+
+    return '<div class="panel p16">' +
+      '<div style="font-size:15px;font-weight:600">Team rivalries</div>' +
+      '<div class="tiny" style="margin-bottom:2px">' + lead + "</div>" +
+      rows +
+      (rv.sameTeam ? '<div class="tiny" style="margin-top:12px">' + rv.sameTeam +
+        (rv.sameTeam === 1 ? " match was" : " matches were") +
+        " the same team on both sides and isn\u2019t counted here.</div>" : "") +
+      "</div>";
+  }
+
   function teamTable() {
     var t = {};
     sxv().forEach(function (s) {
@@ -877,6 +958,230 @@
       carryX: cp.x, carryY: cp.y,
       totalX: wx + cp.x, totalY: wy + cp.y
     };
+  }
+
+  // Everything about one player, from their own side of every match.
+  function playerStats(pid) {
+    var rows = [];
+    sxv().forEach(function (s) {
+      mxv(s).forEach(function (m) {
+        if (m.a !== pid && m.b !== pid) return;
+        var home = m.a === pid;
+        var side = home ? "a" : "b";
+        rows.push({
+          s: s, m: m,
+          opp: home ? m.b : m.a,
+          gf: home ? m.ga : m.gb,
+          ga: home ? m.gb : m.ga,
+          team: (home ? m.ta : m.tb) || "",
+          oppTeam: (home ? m.tb : m.ta) || "",
+          mine: (m.sc || []).filter(function (g) { return g.s === side; })
+        });
+      });
+    });
+
+    var st = {
+      rows: rows, p: rows.length, w: 0, d: 0, l: 0, gf: 0, ga: 0,
+      clean: 0, blank: 0, teams: {}, scorers: {}, opp: {},
+      best: null, streak: 0, seriesWon: 0, seriesDrawn: 0, seriesLost: 0, seriesPlayed: 0
+    };
+
+    var run = 0;
+    rows.forEach(function (r) {
+      st.gf += r.gf; st.ga += r.ga;
+      var res = r.gf > r.ga ? "w" : r.gf < r.ga ? "l" : "d";
+      st[res]++;
+      if (r.ga === 0) st.clean++;
+      if (r.gf === 0) st.blank++;
+
+      run = res === "w" ? run + 1 : 0;
+      if (run > st.streak) st.streak = run;
+
+      if (res === "w" && (!st.best || r.gf - r.ga > st.best.gf - st.best.ga)) st.best = r;
+
+      if (r.team) {
+        var tk = st.teams[r.team] || (st.teams[r.team] = { name: r.team, p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 });
+        tk.p++; tk[res]++; tk.gf += r.gf; tk.ga += r.ga;
+      }
+      r.mine.forEach(function (g) {
+        var n = (g.n || "").trim();
+        if (!n) return;
+        var key = n.toLowerCase();
+        var sc = st.scorers[key] || (st.scorers[key] = { name: n, goals: 0 });
+        sc.goals++;
+      });
+      var ok = st.opp[r.opp] || (st.opp[r.opp] = { id: r.opp, p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 });
+      ok.p++; ok[res]++; ok.gf += r.gf; ok.ga += r.ga;
+    });
+
+    st.gd = st.gf - st.ga;
+
+    // Series this player actually took part in.
+    sxv().forEach(function (s) {
+      var played = mxv(s).some(function (m) { return m.a === pid || m.b === pid; });
+      if (!played) return;
+      var r = seriesResult(s);
+      if (!r.complete) return;
+      st.seriesPlayed++;
+      if (r.winner === pid) st.seriesWon++;
+      else if (r.winner) st.seriesLost++;
+      else st.seriesDrawn++;
+    });
+    st.seriesWon += carryOf(pid);
+
+    var teamList = Object.keys(st.teams).map(function (k) { return st.teams[k]; });
+    st.favTeam = teamList.slice().sort(function (a, b) { return b.p - a.p || b.w - a.w; })[0] || null;
+    st.bestTeam = teamList.filter(function (t) { return t.p >= 3; })
+      .sort(function (a, b) { return (b.w / b.p) - (a.w / a.p) || b.p - a.p; })[0] || null;
+    if (st.bestTeam && st.favTeam && st.bestTeam.name === st.favTeam.name) st.bestTeam = null;
+    st.teamList = teamList.sort(function (a, b) { return b.p - a.p; });
+
+    st.scorerList = Object.keys(st.scorers).map(function (k) { return st.scorers[k]; })
+      .sort(function (a, b) { return b.goals - a.goals || a.name.localeCompare(b.name); });
+    st.favScorer = st.scorerList[0] || null;
+
+    st.oppList = Object.keys(st.opp).map(function (k) { return st.opp[k]; })
+      .sort(function (a, b) { return b.p - a.p; });
+
+    return st;
+  }
+
+  function playerHTML() {
+    var pid = ui.player || data.players[0].id;
+    if (!data.players.some(function (p) { return p.id === pid; })) pid = data.players[0].id;
+    var st = playerStats(pid);
+    var K = kit(pid);
+
+    var picker = '<div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:4px">' +
+      data.players.map(function (p, i) {
+        var on = p.id === pid;
+        return '<button class="chip" data-player="' + p.id + '" style="' +
+          (on ? "background:" + KITS[i % 3] + ";color:var(--ink);border-color:" + KITS[i % 3] : "") +
+          '">' + esc(p.name) + "</button>";
+      }).join("") + "</div>";
+
+    if (!st.p && !st.seriesWon) {
+      return picker + '<div class="panel p16" style="text-align:center;padding:24px">' +
+        '<div class="note">Nothing logged for ' + esc(nameOf(pid)) + " yet.</div></div>";
+    }
+
+    var big = function (n, label, colour, size) {
+      return '<div style="flex:1;text-align:center;min-width:0">' +
+        '<div class="num" style="font-size:' + (size || 40) + "px;color:" + (colour || "var(--chalk)") + '">' + n + "</div>" +
+        '<div class="tiny" style="margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(label) + "</div></div>";
+    };
+    var line = function (label, value, colour, sub) {
+      return '<div style="padding:11px 0;border-top:1px solid var(--line)">' +
+        '<div class="between"><span class="note">' + label + "</span>" +
+        '<span style="font-size:14px;font-weight:700;text-align:right;color:' + (colour || "var(--chalk)") + '">' +
+        value + "</span></div>" +
+        (sub ? '<div class="tiny" style="text-align:right;margin-top:2px">' + sub + "</div>" : "") + "</div>";
+    };
+    var pct = function (a, b) { return b ? Math.round((a / b) * 100) + "%" : "\u2013"; };
+
+    // headline
+    var head = '<div class="panel p16">' +
+      '<div class="row" style="gap:8px;margin-bottom:6px">' +
+        big(st.seriesWon, "series won", K, 44) +
+        big(st.p, "matches", "var(--chalk)", 30) +
+        big(pct(st.w, st.p), "win rate", "var(--chalk)", 30) +
+      "</div>" +
+      (st.seriesPlayed
+        ? '<div class="tiny" style="text-align:center;margin-top:8px">' +
+          st.seriesDrawn + " drawn \u00b7 " + st.seriesLost + " lost" +
+          (carryOf(pid) ? " \u00b7 " + carryOf(pid) + " carried over" : "") + "</div>"
+        : "") +
+      "</div>";
+
+    // favourites
+    var favs = '<div class="panel p16">' +
+      '<div style="font-size:15px;font-weight:600">Favourites</div>' +
+      (st.favTeam
+        ? line("Most used team", esc(st.favTeam.name), K,
+            st.favTeam.p + " matches \u00b7 " + st.favTeam.w + "W " + st.favTeam.d + "D " + st.favTeam.l + "L \u00b7 " +
+            pct(st.favTeam.w, st.favTeam.p) + " won")
+        : line("Most used team", "\u2013", null, "no teams recorded yet")) +
+      (st.bestTeam
+        ? line("Best record with", esc(st.bestTeam.name), K,
+            pct(st.bestTeam.w, st.bestTeam.p) + " won from " + st.bestTeam.p + " matches")
+        : "") +
+      (st.favScorer
+        ? line("Top goalscorer", esc(st.favScorer.name), K,
+            st.favScorer.goals + (st.favScorer.goals === 1 ? " goal" : " goals"))
+        : line("Top goalscorer", "\u2013", null, "no scorers recorded yet")) +
+      "</div>";
+
+    // scoring
+    var scoring = '<div class="panel p16">' +
+      '<div style="font-size:15px;font-weight:600">Scoring</div>' +
+      line("Goals scored", st.gf, K, st.p ? (st.gf / st.p).toFixed(1) + " per match" : "") +
+      line("Goals conceded", st.ga, "var(--chalk)", st.p ? (st.ga / st.p).toFixed(1) + " per match" : "") +
+      line("Goal difference", (st.gd >= 0 ? "+" : "") + st.gd) +
+      line("Clean sheets", st.clean, "var(--chalk)", pct(st.clean, st.p) + " of matches") +
+      line("Failed to score", st.blank, "var(--chalk)", pct(st.blank, st.p) + " of matches") +
+      (st.streak > 1 ? line("Longest winning run", st.streak + " matches", K) : "") +
+      (st.best ? line("Biggest win", st.best.gf + "\u2013" + st.best.ga, K,
+        "against " + esc(nameOf(st.best.opp)) +
+        (st.best.s.date ? " \u00b7 " + esc(prettyDate(st.best.s.date)) : "")) : "") +
+      "</div>";
+
+    // against each opponent
+    var vs = "";
+    if (st.oppList.length) {
+      vs = '<div class="panel p16">' +
+        '<div style="font-size:15px;font-weight:600">Against each of them</div>' +
+        '<div class="tiny" style="margin-bottom:2px">Match record from ' + esc(nameOf(pid)) + "\u2019s side.</div>" +
+        st.oppList.map(function (o) {
+          var sr = pairSeriesRecord(pid, o.id);
+          return line(esc(nameOf(o.id)),
+            o.w + "W " + o.d + "D " + o.l + "L",
+            kit(o.id),
+            o.p + " matches \u00b7 series won " + sr.totalX + " to " + sr.totalY);
+        }).join("") + "</div>";
+    }
+
+    // every team used
+    var teams = "";
+    if (st.teamList.length) {
+      teams = '<div class="panel p16">' +
+        '<div style="font-size:15px;font-weight:600;margin-bottom:12px">Teams used</div>' +
+        '<div style="overflow-x:auto"><table><thead><tr><th>Team</th><th>P</th><th>W</th><th>D</th>' +
+        '<th>L</th><th>GF</th><th>GA</th></tr></thead><tbody>' +
+        st.teamList.map(function (t) {
+          return "<tr><td>" + esc(t.name) + "</td><td>" + t.p + "</td><td>" + t.w + "</td><td>" +
+            t.d + "</td><td>" + t.l + "</td><td>" + t.gf + "</td><td>" + t.ga + "</td></tr>";
+        }).join("") + "</tbody></table></div></div>";
+    }
+
+    // their scorers
+    var scorers = "";
+    if (st.scorerList.length) {
+      scorers = '<div class="panel p16">' +
+        '<div style="font-size:15px;font-weight:600;margin-bottom:12px">Who scores for ' + esc(nameOf(pid)) + "</div>" +
+        '<div class="stack8">' + st.scorerList.slice(0, 8).map(function (r, i) {
+          return '<div class="row" style="gap:10px">' +
+            '<span class="tiny" style="width:18px;flex:none">' + (i + 1) + "</span>" +
+            '<span style="flex:1;min-width:0;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+              esc(r.name) + "</span>" +
+            '<span class="num" style="font-size:20px;color:' + K + ';flex:none">' + r.goals + "</span></div>";
+        }).join("") + "</div></div>";
+    }
+
+    // recent form
+    var form = "";
+    if (st.rows.length >= 2) {
+      var last = st.rows.slice(-8);
+      form = '<div class="panel p16">' +
+        '<div class="between" style="align-items:center">' +
+          '<span class="note">Recent form</span>' +
+          '<span class="row" style="gap:5px">' + last.map(function (r) {
+            var res = r.gf > r.ga ? "W" : r.gf < r.ga ? "L" : "D";
+            var bg = res === "W" ? K : res === "L" ? "var(--dim)" : "var(--muted)";
+            return '<span class="pill" style="background:' + bg + ';color:var(--ink)">' + res + "</span>";
+          }).join("") + "</span></div></div>";
+    }
+
+    return picker + head + form + favs + scoring + vs + scorers + teams;
   }
 
   function h2hHTML() {
@@ -1230,7 +1535,8 @@
       recordsHTML() +
       scorerPanelHTML() +
       h2hHTML() +
-      teamPanel;
+      teamPanel +
+      rivalryHTML();
   }
 
   function carryPanelHTML() {
@@ -1467,7 +1773,7 @@
     document.getElementById("warn").innerHTML = storageOK ? "" :
       '<div class="warn">This browser isn\u2019t letting the page save. Open it from a web address rather than a downloaded file, and keep private browsing off.</div>';
 
-    document.getElementById("nav").innerHTML = [["now", "Series"], ["table", "Table"], ["history", "History"], ["settings", "Setup"]]
+    document.getElementById("nav").innerHTML = [["now", "Series"], ["table", "Table"], ["player", "Player"], ["history", "History"], ["settings", "Setup"]]
       .map(function (t) { return '<button data-tab="' + t[0] + '" class="' + (ui.tab === t[0] ? "on" : "") + '">' + t[1] + "</button>"; })
       .join("");
 
@@ -1475,6 +1781,7 @@
     v.className = "stack8";
     document.getElementById("syncbar").innerHTML = syncLine();
     v.innerHTML = ui.tab === "now" ? nowHTML()
+      : ui.tab === "player" ? filterBarHTML(false) + playerHTML()
       : ui.tab === "table" ? filterBarHTML(false) + tableHTML()
       : ui.tab === "history" ? filterBarHTML(true) + historyHTML()
       : setupHTML();
@@ -1646,7 +1953,7 @@
     var el = e.target.closest("[data-tab],[data-copy],[data-new],[data-log],[data-edit],[data-pick]," +
       "[data-goal],[data-save],[data-del],[data-close],[data-open],[data-delseries],[data-len]," +
       "[data-export],[data-import]," +
-      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share],[data-deadrubber]");
+      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share],[data-deadrubber],[data-player]");
     if (!el) return;
     var d = el.dataset;
 
@@ -1743,6 +2050,8 @@
     if (d.len) { data.seriesLength = +d.len; data.settingsUpdated = Date.now(); return commit(); }
 
     if (d.pair) { ui.pair = +d.pair; return render(); }
+
+    if (d.player) { ui.player = d.player; return render(); }
 
     if (el.hasAttribute("data-ver-filter")) { ui.ver = d.verFilter; ui.day = ""; return render(); }
 
