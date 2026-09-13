@@ -178,7 +178,7 @@
   var storageOK = true;
   var data = load();
   var ui = { pair: 0, ver: "", mode: "", day: "", player: "", tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [], v: "", md: "",
-             newTeam: "", newVer: "", invited: false, inviteText: "", editScorer: "", scorerNew: "", target: "", openSeries: null, confirming: false, copied: false };
+             newTeam: "", newVer: "", invited: false, inviteText: "", editScorer: "", scorerNew: "", target: "", dialog: null, openSeries: null, confirming: false, copied: false };
 
   /* ------------------------------ persistence ----------------------------- */
 
@@ -839,6 +839,106 @@
         .sort(function (a, b) { return b.n - a.n || (b.gx + b.gy) - (a.gx + a.gy); }),
       sameTeam: sameTeam
     };
+  }
+
+  // Every Long Ranger goal is worth two, so an odd scoreline can't have come
+  // from that mode. Used to keep bulk tagging from producing nonsense.
+  // Sandboxed iframes (previews, some embeds) silently block window.confirm
+  // and return false, which reads as "cancelled". So ask in the page instead.
+  function dialog(title, body, actions) {
+    ui.dialog = { title: title, body: body, actions: actions };
+    render();
+  }
+
+  function dialogHTML() {
+    var d = ui.dialog;
+    if (!d) return "";
+    return '<div class="panel p16" style="border-color:var(--chalk)">' +
+      '<div style="font-size:15px;font-weight:600;margin-bottom:6px">' + esc(d.title) + "</div>" +
+      '<div class="note" style="margin-bottom:14px">' + esc(d.body) + "</div>" +
+      '<div class="row" style="gap:8px">' +
+        d.actions.map(function (a, i) {
+          return '<button class="btn ' + (a.tone || "quiet") +
+            '" style="flex:1;min-height:44px" data-dlg="' + i + '">' + esc(a.label) + "</button>";
+        }).join("") +
+      "</div></div>";
+  }
+
+  function oddScorelines(s) {
+    var n = 0;
+    mx(s).forEach(function (m) {
+      if ((m.ga || 0) % 2 || (m.gb || 0) % 2) n++;
+    });
+    return n;
+  }
+
+  // Re-tagging a series changes what a scorer name is worth, so the name list
+  // has to be resized to keep named goals equal to the scoreline.
+  function wantedNames(goals, md) { return Math.ceil(goals / (md === "lr" ? 2 : 1)); }
+
+  function namesNeedResize(s, md) {
+    var need = 0;
+    mx(s).forEach(function (m) {
+      ["a", "b"].forEach(function (side) {
+        var list = (m.sc || []).filter(function (g) { return g.s === side; });
+        if (!list.length) return;                       // nothing named, nothing to do
+        var goals = side === "a" ? m.ga : m.gb;
+        if (list.length !== wantedNames(goals, md)) need++;
+      });
+    });
+    return need;
+  }
+
+  function resizeNames(m, md) {
+    var out = [];
+    ["a", "b"].forEach(function (side) {
+      var list = (m.sc || []).filter(function (g) { return g.s === side; });
+      var goals = side === "a" ? m.ga : m.gb;
+      var want = wantedNames(goals, md);
+      if (!list.length) return;
+      for (var i = 0; i < want; i++) {
+        out.push({ n: list[Math.floor(i * list.length / want)].n, s: side });
+      }
+    });
+    return out;
+  }
+
+  function setSeriesMode(id, md, fixNames) {
+    var s = seriesById(id);
+    if (!s) return;
+    mx(s).forEach(function (m) {
+      m.md = md;
+      if (fixNames && (m.sc || []).length) m.sc = resizeNames(m, md);
+      touch(m);
+    });
+    touch(s);
+    commit();
+  }
+
+  function askAndSetMode(id, md) {
+    var s = seriesById(id);
+    if (!s) return;
+    var odd = md === "lr" ? oddScorelines(s) : 0;
+    if (odd) {
+      return dialog("Odd scorelines",
+        odd + (odd === 1 ? " match here has" : " matches here have") +
+        " an odd scoreline. Every Long Ranger goal is worth two, so that can't have come from this mode.",
+        [{ label: "Tag it anyway", tone: "go", act: function () { askNameFix(id, md); } },
+         { label: "Cancel" }]);
+    }
+    askNameFix(id, md);
+  }
+
+  function askNameFix(id, md) {
+    var s = seriesById(id);
+    if (!s) return;
+    if (!namesNeedResize(s, md)) return setSeriesMode(id, md, false);
+    dialog("Scorer names",
+      md === "lr"
+        ? "In Long Ranger one name counts 2 goals. Adjust the names in this series so they still add up to the scorelines?"
+        : "In Normal mode one name counts 1 goal. Adjust the names in this series so they still add up to the scorelines?",
+      [{ label: "Adjust them", tone: "go", act: function () { setSeriesMode(id, md, true); } },
+       { label: "Leave as typed", act: function () { setSeriesMode(id, md, false); } }]);
   }
 
   function rivalryHTML() {
@@ -1638,10 +1738,18 @@
     var changed = false;
     var already = data.sync.room;
     if (room && room !== already) {
-      if (already && !window.confirm(
-            "This link joins the room \"" + room + "\".\n\n" +
-            "You're currently on \"" + already + "\". Switch?")) {
+      if (already) {
         wipeHash();
+        dialog("Join a different room?",
+          "This link joins \u201c" + room + "\u201d. You're currently on \u201c" + already + "\u201d.",
+          [{ label: "Switch", tone: "go", act: function () {
+              data.sync.room = room;
+              if (url) data.sync.url = url;
+              data.pushedAt = 0;
+              save();
+              syncNow(true);
+            } },
+           { label: "Stay put" }]);
         return false;
       }
       data.sync.room = room;
@@ -2074,11 +2182,11 @@
           var lines = shown.map(function (m, k) { return slotHTML(m, k, false); }).join("");
           var curMode = seriesMode(s);
           out += '<div style="padding:0 16px 16px"><div class="stack8">' + lines + "</div>" +
-            '<div class="row" style="gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">' +
-              '<span class="tiny" style="flex:none">Mode</span>' +
+            '<div class="tiny" style="margin-top:14px;margin-bottom:6px">Mode</div>' +
+            '<div class="row" style="gap:8px;align-items:center">' +
               [["", "Normal"], ["lr", "Long Ranger"]].map(function (o) {
                 var on = curMode === o[0];
-                return '<button class="chip" style="padding:5px 12px;font-size:12px;' +
+                return '<button class="chip" style="flex:1;min-height:44px;font-size:13px;' +
                   (on ? "background:var(--chalk);color:var(--ink);border-color:var(--chalk)" : "") +
                   '" data-setmode="' + s.id + ":" + o[0] + '">' + o[1] + "</button>";
               }).join("") +
@@ -2089,7 +2197,7 @@
                 return esc(nameOf(r.id)) + " " + r.w + (r.d ? " (" + r.d + "d)" : "");
               }).join(" \u00b7 ") +
               (s.casual ? " \u00b7 not counted as a series" : "") + "</span>" +
-              '<button class="tiny" data-delseries="' + s.id + '">Delete series</button>' +
+              '<button class="tiny" data-delseries="' + s.id + '" style="padding:10px 4px">Delete series</button>' +
             "</div></div>";
         }
         out += "</div>";
@@ -2238,7 +2346,8 @@
 
     var v = document.getElementById("view");
     v.className = "stack8";
-    document.getElementById("syncbar").innerHTML = syncLine();
+    if (ui.dialog) { v.innerHTML = dialogHTML(); return; }
+    document.getElementById("syncbar").innerHTML = ui.dialog ? "" : syncLine();
     v.innerHTML = ui.tab === "now" ? nowHTML()
       : ui.tab === "player" ? filterBarHTML(false) + playerHTML()
       : ui.tab === "table" ? filterBarHTML(false) + tableHTML()
@@ -2413,9 +2522,16 @@
     var el = e.target.closest("[data-tab],[data-copy],[data-new],[data-log],[data-edit],[data-pick]," +
       "[data-goal],[data-save],[data-del],[data-close],[data-open],[data-delseries],[data-len]," +
       "[data-export],[data-import]," +
-      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-mode-filter],[data-addver],[data-delver],[data-share],[data-deadrubber],[data-player],[data-invite],[data-selectall],[data-editscorer],[data-saverename],[data-cancelrename],[data-mergescorer],[data-oneoff],[data-target],[data-setmode],[data-bulkmode]");
+      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-mode-filter],[data-addver],[data-delver],[data-share],[data-deadrubber],[data-player],[data-invite],[data-selectall],[data-editscorer],[data-saverename],[data-cancelrename],[data-mergescorer],[data-oneoff],[data-target],[data-setmode],[data-bulkmode],[data-dlg]");
     if (!el) return;
     var d = el.dataset;
+
+    if (d.dlg) {
+      var act = ui.dialog && ui.dialog.actions[+d.dlg];
+      ui.dialog = null;
+      if (act && act.act) act.act(); else render();
+      return;
+    }
 
     if (d.tab) { ui.tab = d.tab; ui.sheet = null; return render(); }
 
@@ -2455,28 +2571,30 @@
       var pending = candidates.filter(function (s) { return skipped.indexOf(s) < 0; });
 
       if (!pending.length) {
-        window.alert(skipped.length
-          ? "Nothing to tag. " + skipped.length + (skipped.length === 1 ? " series has" : " series have") +
-            " odd scorelines, which can't happen in Long Ranger."
-          : "Everything is already tagged " + modeName(target) + ".");
-        return;
+        return dialog("Nothing to tag",
+          skipped.length
+            ? skipped.length + (skipped.length === 1 ? " series has" : " series have") +
+              " odd scorelines, which can't come from Long Ranger."
+            : "Everything is already tagged " + modeName(target) + ".",
+          [{ label: "OK", tone: "go" }]);
       }
       var resizes = pending.filter(function (s) { return namesNeedResize(s, target); }).length;
-      if (!window.confirm(
-            "Tag " + pending.length + (pending.length === 1 ? " series" : " series") +
-            " as " + modeName(target) + "?" +
-            (resizes ? "\n\nScorer names in " + resizes + " of them will be adjusted so they still add up to the scorelines." : "") +
-            (skipped.length ? "\n\n" + skipped.length + (skipped.length === 1 ? " series is" : " series are") +
-              " skipped \u2014 odd scorelines can't come from Long Ranger." : ""))) return;
-      pending.forEach(function (s) {
-        mx(s).forEach(function (m) {
-          m.md = target;
-          if ((m.sc || []).length) m.sc = resizeNames(m, target);
-          touch(m);
-        });
-        touch(s);
-      });
-      return commit();
+      return dialog("Tag " + pending.length + (pending.length === 1 ? " series" : " series"),
+        "Set " + (pending.length === 1 ? "it" : "them") + " to " + modeName(target) + "." +
+        (resizes ? " Scorer names in " + resizes + " will be adjusted to keep the totals right." : "") +
+        (skipped.length ? " " + skipped.length + " skipped for odd scorelines." : ""),
+        [{ label: "Tag them", tone: "go", act: function () {
+            pending.forEach(function (s) {
+              mx(s).forEach(function (m) {
+                m.md = target;
+                if ((m.sc || []).length) m.sc = resizeNames(m, target);
+                touch(m);
+              });
+              touch(s);
+            });
+            commit();
+          } },
+         { label: "Cancel" }]);
     }
 
     if (d.oneoff) {
