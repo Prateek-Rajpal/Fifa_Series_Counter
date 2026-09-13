@@ -80,7 +80,7 @@ async function pull(url, env, cors) {
       "SELECT id, created, sdate, casual, updated, deleted FROM series WHERE room = ?"
     ).bind(room).all(),
     env.DB.prepare(
-      "SELECT id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, v, updated, deleted FROM matches WHERE room = ?"
+      "SELECT id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, v, md, updated, deleted FROM matches WHERE room = ?"
     ).bind(room).all(),
     env.DB.prepare(
       "SELECT json, updated FROM settings WHERE room = ?"
@@ -136,8 +136,8 @@ async function push(request, env, cors) {
   }
 
   const matchUpsert = env.DB.prepare(
-    `INSERT INTO matches (room, id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, v, updated, deleted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO matches (room, id, series_id, ord, pa, pb, ga, gb, ta, tb, sc, v, md, updated, deleted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(room, id) DO UPDATE SET
        series_id = excluded.series_id,
        ord = excluded.ord,
@@ -146,6 +146,7 @@ async function push(request, env, cors) {
        ta = excluded.ta, tb = excluded.tb,
        sc = excluded.sc,
        v = excluded.v,
+       md = excluded.md,
        updated = excluded.updated,
        deleted = excluded.deleted
      WHERE excluded.updated > matches.updated`
@@ -156,7 +157,7 @@ async function push(request, env, cors) {
     stmts.push(matchUpsert.bind(
       room, str(m.id, 64), str(m.series_id, 64), num(m.ord),
       str(m.pa, 32), str(m.pb, 32), num(m.ga), num(m.gb),
-      str(m.ta, 80), str(m.tb, 80), str(m.sc, MAX_SCORERS_BYTES), str(m.v, 40),
+      str(m.ta, 80), str(m.tb, 80), str(m.sc, MAX_SCORERS_BYTES), str(m.v, 40), str(m.md, 8),
       num(m.updated), m.deleted ? 1 : 0
     ));
   }

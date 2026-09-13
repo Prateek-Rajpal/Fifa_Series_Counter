@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS matches (
   tb         TEXT    NOT NULL DEFAULT '',
   sc         TEXT    NOT NULL DEFAULT '',   -- goalscorers, JSON array
   v          TEXT    NOT NULL DEFAULT '',   -- game version, e.g. 'FC 26'
+  md         TEXT    NOT NULL DEFAULT '',   -- mode: '' normal, 'lr' Long Ranger
   updated    INTEGER NOT NULL,
   deleted    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (room, id)
@@ -46,4 +47,5 @@ CREATE TABLE IF NOT EXISTS settings (
 -- ALTER TABLE matches ADD COLUMN v  TEXT NOT NULL DEFAULT '';
 -- ALTER TABLE series  ADD COLUMN sdate TEXT NOT NULL DEFAULT '';
 -- ALTER TABLE series  ADD COLUMN casual INTEGER NOT NULL DEFAULT 0;
+-- ALTER TABLE matches ADD COLUMN md TEXT NOT NULL DEFAULT '';
 -- ---------------------------------------------------------------------------

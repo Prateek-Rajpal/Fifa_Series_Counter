@@ -162,6 +162,7 @@
     carryH2H: {},
     versions: ["FC 26", "FC 27"],
     lastVersion: "FC 26",
+    lastMode: "",
     sync: { url: "", room: "" },
     pushedAt: 0,
     teams: ["Liverpool", "Barcelona", "Real Madrid", "Bayern Munich",
@@ -176,7 +177,7 @@
 
   var storageOK = true;
   var data = load();
-  var ui = { pair: 0, ver: "", day: "", player: "", tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [], v: "",
+  var ui = { pair: 0, ver: "", mode: "", day: "", player: "", tab: "now", sheet: null, picked: [], ga: 0, gb: 0, ta: "", tb: "", sa: [], sb: [], v: "", md: "",
              newTeam: "", newVer: "", invited: false, inviteText: "", editScorer: "", scorerNew: "", target: "", openSeries: null, confirming: false, copied: false };
 
   /* ------------------------------ persistence ----------------------------- */
@@ -214,9 +215,18 @@
   // Version filter. Only the Table and History tabs honour it; logging is
   // always against the live series whatever the filter says.
   function verOK(m) { return !ui.ver || (m.v || "") === ui.ver; }
-  function mxv(s) { return mx(s).filter(verOK); }
+  function modeOK(m) {
+    if (!ui.mode) return true;
+    return ui.mode === "lr" ? (m.md === "lr") : (m.md !== "lr");
+  }
+  function mxv(s) {
+    return mx(s).filter(function (m) { return verOK(m) && modeOK(m); });
+  }
   function sxv() {
-    return sx().filter(function (s) { return !ui.ver || mx(s).some(verOK); });
+    return sx().filter(function (s) {
+      if (!ui.ver && !ui.mode) return true;
+      return mx(s).some(function (m) { return verOK(m) && modeOK(m); });
+    });
   }
 
   // Real series only. One-off matches live in "casual" buckets that never
@@ -263,6 +273,7 @@
         if (!m.id) m.id = uid();
         if (m.ord == null) m.ord = mi;
         if (!Array.isArray(m.sc)) m.sc = [];
+        if (!m.md) m.md = "";
         if (!m.updated) m.updated = s.created + mi;
         if (!m.deleted) m.deleted = 0;
       });
@@ -273,6 +284,17 @@
     if (!d.versions || !d.versions.length) d.versions = ["FC 26", "FC 27"];
     if (!d.carryH2H) d.carryH2H = {};
     return d;
+  }
+
+  // Long Ranger: only shots from outside the box count, and each is worth two
+  // goals on the scoreboard. So one name in the scorer list is two goals.
+  function goalWeight(m) { return m && m.md === "lr" ? 2 : 1; }
+  function modeName(md) { return md === "lr" ? "Long Ranger" : "Normal"; }
+  function seriesMode(s) {
+    var ms = mx(s);
+    if (!ms.length) return null;
+    var first = ms[0].md || "";
+    return ms.every(function (m) { return (m.md || "") === first; }) ? first : null;
   }
 
   function tally(matches) {
@@ -434,16 +456,31 @@
     return out.sort();
   }
 
+  function slotsNeeded(goals) {
+    return ui.md === "lr" ? Math.ceil(goals / 2) : goals;
+  }
+
   function scorerInputs(side) {
     var goals = side === 0 ? ui.ga : ui.gb;
     var arr = side === 0 ? ui.sa : ui.sb;
-    if (!goals) return "";
+    var slots = slotsNeeded(goals);
+    if (!slots) return "";
     var out = "";
-    for (var i = 0; i < goals; i++) {
+    for (var i = 0; i < slots; i++) {
       out += '<input class="sc-in" list="scorerlist" data-scorer="' + side + ":" + i +
-        '" placeholder="Goal ' + (i + 1) + '" value="' + esc(arr[i] || "") + '" />';
+        '" placeholder="' + (ui.md === "lr" ? "Long ranger " : "Goal ") + (i + 1) +
+        '" value="' + esc(arr[i] || "") + '" />';
     }
-    return '<div class="stack8" style="margin-top:10px">' + out + "</div>";
+    return '<div class="stack8" style="margin-top:10px">' + out +
+      (ui.md === "lr" ? '<div class="tiny">each name counts 2 goals</div>' : "") + "</div>";
+  }
+
+  function modeSelect(current) {
+    return '<select class="sel" data-mode="1">' +
+      ["", "lr"].map(function (v) {
+        return '<option value="' + v + '"' + (v === current ? " selected" : "") + ">" +
+          modeName(v) + "</option>";
+      }).join("") + "</select>";
   }
 
   function versionSelect(current) {
@@ -591,9 +628,10 @@
           if (!n) return;
           var key = n.toLowerCase();
           if (!t[key]) t[key] = { name: n, goals: 0, by: {} };
-          t[key].goals++;
+          var wgt = goalWeight(m);
+          t[key].goals += wgt;
           var owner = g.s === "a" ? m.a : m.b;
-          t[key].by[owner] = (t[key].by[owner] || 0) + 1;
+          t[key].by[owner] = (t[key].by[owner] || 0) + wgt;
         });
       });
     });
@@ -1034,8 +1072,12 @@
         '<span style="font-size:15px;font-weight:600">' + (m ? "Edit this match" : "Log a match") + '</span>' +
         '<button data-close="1" style="color:var(--muted);font-size:20px;line-height:1">\u00d7</button>' +
       '</div>' +
-      '<div class="note" style="margin-bottom:8px">Game</div>' +
-      '<div style="margin-bottom:16px">' + versionSelect(ui.v) + "</div>" +
+      '<div class="row" style="gap:8px;margin-bottom:16px">' +
+        '<div style="flex:1;min-width:0"><div class="note" style="margin-bottom:8px">Game</div>' +
+          versionSelect(ui.v) + "</div>" +
+        '<div style="flex:1;min-width:0"><div class="note" style="margin-bottom:8px">Mode</div>' +
+          modeSelect(ui.md) + "</div>" +
+      "</div>" +
       '<div class="note" style="margin-bottom:8px">Tap the two who played.</div>' +
       '<div class="row" style="flex-wrap:wrap;margin-bottom:20px">' + chips + '</div>' +
       scores +
@@ -1106,7 +1148,8 @@
     html += '<div class="panel p16">' +
       '<div class="between" style="margin-bottom:16px">' +
         '<span class="num" style="font-size:30px">Series ' + num + '</span>' +
-        '<span class="note">' + tm.length + " of " + data.seriesLength + " played" +
+        '<span class="note">' + (seriesMode(target) === "lr" ? "Long Ranger \u00b7 " : "") +
+          tm.length + " of " + data.seriesLength + " played" +
           (live && res.table.length
             ? " \u00b7 first to " + (Math.floor(data.seriesLength / 2) + 1)
             : "") + "</span>" +
@@ -1232,12 +1275,13 @@
         var tk = st.teams[r.team] || (st.teams[r.team] = { name: r.team, p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 });
         tk.p++; tk[res]++; tk.gf += r.gf; tk.ga += r.ga;
       }
+      var wgt = goalWeight(r.m);
       r.mine.forEach(function (g) {
         var n = (g.n || "").trim();
         if (!n) return;
         var key = n.toLowerCase();
         var sc = st.scorers[key] || (st.scorers[key] = { name: n, goals: 0 });
-        sc.goals++;
+        sc.goals += wgt;
       });
       var ok = st.opp[r.opp] || (st.opp[r.opp] = { id: r.opp, p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 });
       ok.p++; ok[res]++; ok.gf += r.gf; ok.ga += r.ga;
@@ -1277,6 +1321,34 @@
       .sort(function (a, b) { return b.p - a.p; });
 
     return st;
+  }
+
+  // Match and series record split by mode, independent of the mode filter.
+  function playerModeSplit(pid) {
+    var out = {
+      n: { p: 0, w: 0, d: 0, l: 0, series: 0, splayed: 0 },
+      lr: { p: 0, w: 0, d: 0, l: 0, series: 0, splayed: 0 }
+    };
+    sx().forEach(function (s) {
+      mx(s).filter(verOK).forEach(function (m) {
+        if (m.a !== pid && m.b !== pid) return;
+        var k = m.md === "lr" ? "lr" : "n";
+        var home = m.a === pid;
+        var gf = home ? m.ga : m.gb, ga = home ? m.gb : m.ga;
+        out[k].p++;
+        if (gf > ga) out[k].w++; else if (gf < ga) out[k].l++; else out[k].d++;
+      });
+      if (s.casual) return;
+      var md = seriesMode(s);
+      if (md === null) return;                 // mixed, belongs to neither
+      var r = seriesResult(s);
+      if (!r.complete) return;
+      if (!mx(s).some(function (m) { return m.a === pid || m.b === pid; })) return;
+      var sk = md === "lr" ? "lr" : "n";
+      out[sk].splayed++;
+      if (r.winner === pid) out[sk].series++;
+    });
+    return out;
   }
 
   function playerHTML() {
@@ -1414,7 +1486,28 @@
           }).join("") + "</span></div></div>";
     }
 
-    return picker + head + form + favs + scoring + vs + scorers + teams;
+    var split = playerModeSplit(pid);
+    var modeBlock = (split.n.p || split.lr.p)
+      ? '<div class="panel p16">' +
+        '<div style="font-size:15px;font-weight:600">Win rate by mode</div>' +
+        [["Normal", split.n], ["Long Ranger", split.lr]].map(function (o) {
+          var m = o[1];
+          return '<div style="padding:12px 0;border-top:1px solid var(--line)">' +
+            '<div class="between" style="align-items:baseline">' +
+              '<span style="font-size:14px;font-weight:600">' + o[0] + "</span>" +
+              '<span class="num" style="font-size:30px;color:' + (m.p ? K : "var(--dim)") + '">' +
+                pct(m.w, m.p) + "</span>" +
+            "</div>" +
+            '<div class="tiny" style="text-align:right">' +
+              (m.p
+                ? m.w + "W " + m.d + "D " + m.l + "L from " + m.p + " matches" +
+                  (m.splayed ? " \u00b7 " + m.series + " of " + m.splayed + " series won" : "")
+                : "none played") +
+            "</div></div>";
+        }).join("") + "</div>"
+      : "";
+
+    return picker + head + form + modeBlock + favs + scoring + vs + scorers + teams;
   }
 
   function h2hHTML() {
@@ -1626,7 +1719,7 @@
         matches.push({
           id: m.id, series_id: s.id, ord: m.ord || 0,
           pa: m.a, pb: m.b, ga: m.ga, gb: m.gb, ta: m.ta || "", tb: m.tb || "",
-          sc: JSON.stringify(m.sc || []), v: m.v || "",
+          sc: JSON.stringify(m.sc || []), v: m.v || "", md: m.md || "",
           updated: m.updated, deleted: m.deleted ? 1 : 0
         });
       });
@@ -1675,7 +1768,7 @@
       var next = {
         id: row.id, ord: row.ord, a: row.pa, b: row.pb,
         ga: row.ga, gb: row.gb, ta: row.ta || "", tb: row.tb || "",
-        sc: parseSc(row.sc), v: row.v || "",
+        sc: parseSc(row.sc), v: row.v || "", md: row.md || "",
         updated: row.updated, deleted: row.deleted ? 1 : 0
       };
       if (!local) s.matches.push(next);
@@ -1794,6 +1887,15 @@
         }).join("");
       out += '<div class="row" style="flex-wrap:wrap;gap:8px">' + chips + "</div>";
     }
+
+    var modeChips = [["", "Both modes"], ["n", "Normal"], ["lr", "Long Ranger"]]
+      .map(function (o) {
+        var on = ui.mode === o[0];
+        return '<button class="chip" data-mode-filter="' + o[0] + '" style="' +
+          (on ? "background:var(--chalk);color:var(--ink);border-color:var(--chalk)" : "") +
+          '">' + o[1] + "</button>";
+      }).join("");
+    out += '<div class="row" style="flex-wrap:wrap;gap:8px;margin-top:8px">' + modeChips + "</div>";
 
     if (withDay) {
       var nights = groupByNight(sxv()).reverse();
@@ -1954,20 +2056,34 @@
       g.list.forEach(function (s) {
         var res = seriesResult(s), open = ui.openSeries === s.id;
         var shown = mxv(s);
+        var smd = seriesMode(s);
         var label = s.casual ? "One-off matches"
           : !res.complete ? "In progress \u00b7 " + mx(s).length + " played"
           : res.winner ? nameOf(res.winner) : "Series drawn";
+        var modeTag = smd === "lr"
+          ? '<span class="tchip" style="padding:2px 8px;font-size:11px;margin-left:8px">LR</span>' : "";
         out += '<div class="panel" style="overflow:hidden">' +
           '<button data-open="' + s.id + '" style="display:flex;width:100%;align-items:center;justify-content:space-between;padding:12px 16px;text-align:left">' +
             '<span><span class="num" style="font-size:22px">' +
               (s.casual ? "\u2022" : seriesNo(s)) + "</span>" +
             '<span style="font-size:14px;font-weight:600;margin-left:12px;color:' +
-              (res.winner ? kit(res.winner) : "var(--muted)") + '">' + esc(label) + "</span></span>" +
+              (res.winner ? kit(res.winner) : "var(--muted)") + '">' + esc(label) + "</span>" + modeTag + "</span>" +
             '<span style="color:var(--muted);font-size:13px">' + (open ? "Hide" : "Open") + "</span>" +
           "</button>";
         if (open) {
           var lines = shown.map(function (m, k) { return slotHTML(m, k, false); }).join("");
+          var curMode = seriesMode(s);
           out += '<div style="padding:0 16px 16px"><div class="stack8">' + lines + "</div>" +
+            '<div class="row" style="gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">' +
+              '<span class="tiny" style="flex:none">Mode</span>' +
+              [["", "Normal"], ["lr", "Long Ranger"]].map(function (o) {
+                var on = curMode === o[0];
+                return '<button class="chip" style="padding:5px 12px;font-size:12px;' +
+                  (on ? "background:var(--chalk);color:var(--ink);border-color:var(--chalk)" : "") +
+                  '" data-setmode="' + s.id + ":" + o[0] + '">' + o[1] + "</button>";
+              }).join("") +
+              (curMode === null ? '<span class="tiny">mixed</span>' : "") +
+            "</div>" +
             '<div class="between" style="margin-top:12px">' +
               '<span class="tiny">' + res.table.map(function (r) {
                 return esc(nameOf(r.id)) + " " + r.w + (r.d ? " (" + r.d + "d)" : "");
@@ -2083,6 +2199,24 @@
           : '<div class="tiny" style="margin-top:8px">Anyone with this address and room code can read and write the log.</div>') +
       "</div>" +
 
+      (function () {
+        var untagged = sx().filter(function (s) {
+          return !s.casual && mx(s).length && seriesMode(s) !== "lr";
+        }).length;
+        var tagged = sx().filter(function (s) {
+          return !s.casual && mx(s).length && seriesMode(s) === "lr";
+        }).length;
+        if (!untagged && !tagged) return "";
+        return '<div class="panel p16">' +
+          '<div style="font-size:15px;font-weight:600;margin-bottom:4px">Tag old series by mode</div>' +
+          '<div class="note" style="margin-bottom:12px">Anything logged before modes existed counts as Normal. ' +
+            tagged + " tagged Long Ranger, " + untagged + " not. Series containing an odd scoreline are skipped, since every Long Ranger goal is worth two. You can also change one series at a time from History.</div>" +
+          '<div class="row" style="gap:8px">' +
+            '<button class="btn quiet" style="flex:1" data-bulkmode="lr">All \u2192 Long Ranger</button>' +
+            '<button class="btn quiet" style="flex:1" data-bulkmode="">All \u2192 Normal</button>' +
+          "</div></div>";
+      })() +
+
       scorerFixHTML() +
 
       '<div class="panel p16"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Backup</div>' +
@@ -2162,6 +2296,7 @@
   function resetSheet() {
     ui.picked = []; ui.ga = 0; ui.gb = 0; ui.ta = ""; ui.tb = ""; ui.sa = []; ui.sb = [];
     ui.v = data.lastVersion || (data.versions && data.versions[0]) || "";
+    ui.md = data.lastMode || "";
   }
 
   function startSeries() {
@@ -2278,7 +2413,7 @@
     var el = e.target.closest("[data-tab],[data-copy],[data-new],[data-log],[data-edit],[data-pick]," +
       "[data-goal],[data-save],[data-del],[data-close],[data-open],[data-delseries],[data-len]," +
       "[data-export],[data-import]," +
-      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-addver],[data-delver],[data-share],[data-deadrubber],[data-player],[data-invite],[data-selectall],[data-editscorer],[data-saverename],[data-cancelrename],[data-mergescorer],[data-oneoff],[data-target]");
+      "[data-addteam],[data-delteam],[data-pair],[data-sync],[data-ver-filter],[data-mode-filter],[data-addver],[data-delver],[data-share],[data-deadrubber],[data-player],[data-invite],[data-selectall],[data-editscorer],[data-saverename],[data-cancelrename],[data-mergescorer],[data-oneoff],[data-target],[data-setmode],[data-bulkmode]");
     if (!el) return;
     var d = el.dataset;
 
@@ -2301,6 +2436,47 @@
     if (d.log || d.deadrubber) {
       ui.target = "";
       resetSheet(); prefillSheet(); ui.sheet = {}; return render();
+    }
+
+    if (d.setmode) {
+      var cut = d.setmode.lastIndexOf(":");
+      askAndSetMode(d.setmode.slice(0, cut), d.setmode.slice(cut + 1));
+      return;
+    }
+
+    if (d.bulkmode) {
+      var target = d.bulkmode;
+      var candidates = sx().filter(function (s) {
+        return !s.casual && mx(s).length && seriesMode(s) !== target;
+      });
+      // A series with an odd scoreline cannot have been Long Ranger, so leave it.
+      var skipped = target === "lr"
+        ? candidates.filter(function (s) { return oddScorelines(s); }) : [];
+      var pending = candidates.filter(function (s) { return skipped.indexOf(s) < 0; });
+
+      if (!pending.length) {
+        window.alert(skipped.length
+          ? "Nothing to tag. " + skipped.length + (skipped.length === 1 ? " series has" : " series have") +
+            " odd scorelines, which can't happen in Long Ranger."
+          : "Everything is already tagged " + modeName(target) + ".");
+        return;
+      }
+      var resizes = pending.filter(function (s) { return namesNeedResize(s, target); }).length;
+      if (!window.confirm(
+            "Tag " + pending.length + (pending.length === 1 ? " series" : " series") +
+            " as " + modeName(target) + "?" +
+            (resizes ? "\n\nScorer names in " + resizes + " of them will be adjusted so they still add up to the scorelines." : "") +
+            (skipped.length ? "\n\n" + skipped.length + (skipped.length === 1 ? " series is" : " series are") +
+              " skipped \u2014 odd scorelines can't come from Long Ranger." : ""))) return;
+      pending.forEach(function (s) {
+        mx(s).forEach(function (m) {
+          m.md = target;
+          if ((m.sc || []).length) m.sc = resizeNames(m, target);
+          touch(m);
+        });
+        touch(s);
+      });
+      return commit();
     }
 
     if (d.oneoff) {
@@ -2331,6 +2507,8 @@
         });
         ui.sa.length = ui.ga; ui.sb.length = ui.gb;
         ui.v = m.v || ui.v;
+        ui.md = m.md || "";
+        ui.sa.length = slotsNeeded(ui.ga); ui.sb.length = slotsNeeded(ui.gb);
       } else ui.sheet = {};
       return render();
     }
@@ -2348,7 +2526,7 @@
       var parts = d.goal.split(":"), which = parts[0] === "0" ? "ga" : "gb";
       ui[which] = Math.max(0, Math.min(99, ui[which] + parseInt(parts[1], 10)));
       var box = which === "ga" ? ui.sa : ui.sb;
-      box.length = ui[which]; // trims extra names, leaves blanks when the score goes up
+      box.length = slotsNeeded(ui[which]); // trims extras, blanks when the score goes up
       return render();
     }
 
@@ -2360,7 +2538,7 @@
       var sc = [];
       ui.sa.forEach(function (n) { if (n && n.trim()) sc.push({ n: n.trim(), s: "a" }); });
       ui.sb.forEach(function (n) { if (n && n.trim()) sc.push({ n: n.trim(), s: "b" }); });
-      var rec = { a: ui.picked[0], b: ui.picked[1], ga: ui.ga, gb: ui.gb, ta: ui.ta, tb: ui.tb, sc: sc, v: ui.v };
+      var rec = { a: ui.picked[0], b: ui.picked[1], ga: ui.ga, gb: ui.gb, ta: ui.ta, tb: ui.tb, sc: sc, v: ui.v, md: ui.md };
       if (ui.sheet && ui.sheet.editIndex != null && live[ui.sheet.editIndex]) {
         Object.assign(touch(live[ui.sheet.editIndex]), rec);
       } else {
@@ -2368,6 +2546,7 @@
       }
       touch(s);
       data.lastVersion = ui.v;
+      data.lastMode = ui.md;
       ui.sheet = null;
       return commit();
     }
@@ -2399,6 +2578,7 @@
     if (d.player) { ui.player = d.player; return render(); }
 
     if (el.hasAttribute("data-ver-filter")) { ui.ver = d.verFilter; ui.day = ""; return render(); }
+    if (el.hasAttribute("data-mode-filter")) { ui.mode = d.modeFilter; ui.day = ""; return render(); }
 
     if (d.sync) return syncNow();
 
@@ -2493,6 +2673,11 @@
   document.addEventListener("change", function (e) {
     if (e.target.dataset && e.target.dataset.day) { ui.day = e.target.value; return render(); }
     if (e.target.dataset && e.target.dataset.ver) { ui.v = e.target.value; return; }
+    if (e.target.dataset && e.target.dataset.mode) {
+      ui.md = e.target.value;
+      ui.sa.length = slotsNeeded(ui.ga); ui.sb.length = slotsNeeded(ui.gb);
+      return render();
+    }
     if (e.target.dataset && e.target.dataset.sdate) {
       var sd = data.series.filter(function (s) { return s.id === e.target.dataset.sdate; })[0];
       if (sd) { sd.date = e.target.value; touch(sd); commit(); }

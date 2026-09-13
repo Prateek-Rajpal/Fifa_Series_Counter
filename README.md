@@ -79,22 +79,6 @@ Tap **Sync now**. After that it syncs automatically on open, when the app comes
 back to the foreground, when the network returns, and about 1.5 seconds after
 any change.
 
-## Upgrading an already-deployed database
-
-Run these once in the D1 console, then push the updated `worker/index.js`.
-Each is safe to run on its own; one erroring because the column already
-exists doesn't affect the others.
-
-```sql
-ALTER TABLE matches ADD COLUMN sc     TEXT NOT NULL DEFAULT '';
-ALTER TABLE matches ADD COLUMN v      TEXT NOT NULL DEFAULT '';
-ALTER TABLE series  ADD COLUMN sdate  TEXT NOT NULL DEFAULT '';
-ALTER TABLE series  ADD COLUMN casual INTEGER NOT NULL DEFAULT 0;
-```
-
-Existing rows keep working — they just have no scorers, no game tag, and a
-date filled in from when the series was created. Fresh databases get all three
-columns from `schema.sql` and need nothing extra.
 
 ## How a series is decided
 
@@ -115,6 +99,17 @@ There is no points system. A drawn match counts for neither player: nothing is
 added for it and nothing is deducted for a loss. The Table tab is a record of
 what happened — played, won, drawn, lost, goals for and against — not a
 league table.
+
+## Long Ranger mode
+
+Each match is tagged **Normal** or **Long Ranger**. In Long Ranger only shots
+from outside the box count and each is worth two goals, so the app asks for one
+scorer name per two goals and credits that name with 2 in the scorer charts.
+Type the name once.
+
+Stats can be filtered to one mode, and the Table tab has a **King of each mode**
+panel showing series won in each. A series counts under a mode only if every
+match in it was played that way; anything mixed is excluded and flagged.
 
 ## One-off matches
 
